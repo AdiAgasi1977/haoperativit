@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>האופרטיבית — מעקב שעות</title>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0f1117;
+  --bg2: #181c27;
+  --bg3: #1f2436;
+  --border: #2a3050;
+  --accent: #4f8ef7;
+  --accent2: #2ecc8a;
+  --warn: #f76b4f;
+  --text: #e8ecf5;
+  --text2: #8892b0;
+  --text3: #4a5570;
+  --radius: 10px;
+  --font: 'Heebo', sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: var(--font); direction: rtl; min-height: 100vh; }
+input, select, textarea { font-family: var(--font); font-size: 13px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; width: 100%; outline: none; transition: border-color .2s; }
+input:focus, select:focus { border-color: var(--accent); }
+select option { background: var(--bg2); }
+
+/* LAYOUT */
+.app-wrap { display: flex; min-height: 100vh; }
+.sidebar { width: 200px; background: var(--bg2); border-left: 1px solid var(--border); padding: 24px 0; display: flex; flex-direction: column; flex-shrink: 0; }
+.logo { padding: 0 20px 24px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.logo-title { font-size: 16px; font-weight: 800; color: var(--text); letter-spacing: -.3px; }
+.logo-sub { font-size: 11px; color: var(--text2); margin-top: 2px; }
+.nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 20px; cursor: pointer; font-size: 13px; color: var(--text2); border-right: 3px solid transparent; transition: all .15s; }
+.nav-item:hover { background: var(--bg3); color: var(--text); }
+.nav-item.active { color: var(--accent); border-right-color: var(--accent); background: rgba(79,142,247,.07); }
+.nav-icon { font-size: 16px; width: 20px; text-align: center; }
+.main { flex: 1; padding: 28px 32px; overflow-y: auto; }
+.page { display: none; }
+.page.active { display: block; }
+.page-title { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+.page-sub { font-size: 13px; color: var(--text2); margin-bottom: 24px; }
+
+/* STATUS BAR */
+.status-bar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 6px; font-size: 12px; margin-bottom: 20px; }
+.status-bar.ok { background: rgba(46,204,138,.1); color: var(--accent2); border: 1px solid rgba(46,204,138,.2); }
+.status-bar.err { background: rgba(247,107,79,.1); color: var(--warn); border: 1px solid rgba(247,107,79,.2); }
+.status-bar.loading { background: rgba(79,142,247,.1); color: var(--accent); border: 1px solid rgba(79,142,247,.2); }
+
+/* CARDS */
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 12px; }
+.card.running { border-color: var(--accent2); box-shadow: 0 0 0 1px rgba(46,204,138,.3); }
+.card-title { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .07em; margin-bottom: 14px; }
+
+/* GRID */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+.form-group { display: flex; flex-direction: column; gap: 5px; }
+.form-group label { font-size: 11px; color: var(--text2); font-weight: 500; }
+
+/* BUTTONS */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 6px; font-size: 13px; font-family: var(--font); cursor: pointer; border: 1px solid var(--border); background: var(--bg3); color: var(--text); transition: all .15s; }
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-primary:hover { opacity: .85; color: #fff; }
+.btn-success { background: var(--accent2); color: #fff; border-color: var(--accent2); }
+.btn-success:hover { opacity: .85; color: #fff; }
+.btn-danger { color: var(--warn); border-color: transparent; background: none; }
+.btn-danger:hover { background: rgba(247,107,79,.1); }
+.btn-print { background: #7c5cbf; color: #fff; border-color: #7c5cbf; }
+.btn-print:hover { opacity: .85; color: #fff; }
+
+/* BADGES */
+.badge { font-size: 11px; padding: 2px 9px; border-radius: 20px; font-weight: 500; display: inline-block; }
+.badge-h { background: rgba(79,142,247,.15); color: var(--accent); }
+.badge-f { background: rgba(255,183,77,.15); color: #ffb74d; }
+.badge-run { background: rgba(46,204,138,.15); color: var(--accent2); }
+
+/* CLIENT CARD */
+.client-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+.client-name { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.client-sub { font-size: 12px; color: var(--text2); margin-top: 3px; }
+.client-meta { display: flex; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+.meta-item { font-size: 12px; color: var(--text2); }
+.meta-item strong { color: var(--text); }
+.timer-row { display: flex; align-items: center; gap: 10px; }
+.timer-disp { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); min-width: 80px; }
+.btn-timer-start { border-color: var(--accent2); color: var(--accent2); }
+.btn-timer-start:hover { background: rgba(46,204,138,.1); }
+.btn-timer-stop { border-color: var(--warn); color: var(--warn); }
+.btn-timer-stop:hover { background: rgba(247,107,79,.1); }
+
+/* STATS */
+.stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; }
+.stat-label { font-size: 11px; color: var(--text2); margin-bottom: 6px; font-weight: 500; text-transform: uppercase; letter-spacing: .06em; }
+.stat-val { font-size: 24px; font-weight: 700; color: var(--text); }
+.stat-sub { font-size: 12px; color: var(--text2); margin-top: 3px; }
+
+/* TABLE */
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th { font-size: 11px; font-weight: 600; color: var(--text2); text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; text-transform: uppercase; letter-spacing: .05em; }
+.tbl td { padding: 9px 10px; border-bottom: 1px solid rgba(42,48,80,.6); color: var(--text); vertical-align: top; }
+.tbl tr:hover td { background: rgba(255,255,255,.02); }
+.tbl tr.total-row td { font-weight: 700; background: var(--bg3); border-top: 1px solid var(--border); }
+.tbl-wrap { overflow-x: auto; }
+
+/* EDIT FORM */
+.edit-panel { background: var(--bg3); border-radius: 8px; padding: 14px; margin-top: 10px; display: none; border: 1px solid var(--border); }
+.edit-panel.open { display: block; }
+
+/* FILTER BAR */
+.filter-bar { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 20px; padding: 14px 18px; background: var(--bg2); border-radius: var(--radius); border: 1px solid var(--border); }
+
+/* MODAL */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 200; align-items: center; justify-content: center; }
+.modal-overlay.open { display: flex; }
+.modal-box { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; width: 340px; }
+.modal-title { font-size: 15px; font-weight: 600; margin-bottom: 16px; display: flex; justify-content: space-between; }
+
+/* LEADS */
+.lead-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 18px; margin-bottom: 8px; }
+.lead-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.lead-name { font-size: 14px; font-weight: 600; }
+.badge-new { background: rgba(79,142,247,.15); color: var(--accent); }
+.badge-talk { background: rgba(46,204,138,.15); color: var(--accent2); }
+.badge-wait { background: rgba(255,183,77,.15); color: #ffb74d; }
+.badge-closed { background: rgba(255,255,255,.07); color: var(--text2); }
+.badge-won { background: rgba(46,204,138,.25); color: var(--accent2); }
+
+/* LOG EDIT inline */
+.log-edit-row { background: var(--bg3); border-radius: 6px; padding: 8px 10px; margin-top: 6px; display: none; }
+.log-edit-row.open { display: flex; gap: 8px; align-items: center; }
+
+/* SYNC indicator */
+.sync-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.sync-dot.ok { background: var(--accent2); }
+.sync-dot.err { background: var(--warn); }
+.sync-dot.spin { background: var(--accent); animation: pulse 1s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* pos/neg */
+.pos { color: var(--accent2); }
+.neg { color: var(--warn); }
+
+/* PRINT STYLES */
+@media print {
+  body { background: #fff; color: #111; direction: rtl; }
+  .no-print { display: none !important; }
+  .print-area { display: block !important; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════ MAIN APP -->
+<div id="main-app" class="app-wrap">
+  <div class="sidebar no-print">
+    <div class="logo">
+      <div class="logo-title">האופרטיבית</div>
+      <div class="logo-sub" id="sync-status-label">מתחבר...</div>
+    </div>
+    <div class="nav-item active" onclick="showPage('tracker')"><span class="nav-icon">⏱</span> מעקב זמן</div>
+    <div class="nav-item" onclick="showPage('report-all')"><span class="nav-icon">📊</span> דוח כולל</div>
+    <div class="nav-item" onclick="showPage('report-client')"><span class="nav-icon">👤</span> דוח לקוח</div>
+    <div class="nav-item" onclick="showPage('leads')"><span class="nav-icon">🎯</span> לידים</div>
+    <div class="nav-item" onclick="showPage('settings')"><span class="nav-icon">⚙</span> הגדרות</div>
+    <div style="flex:1"></div>
+    <div style="padding:16px 20px;font-size:11px;color:var(--text3);">
+      <span class="sync-dot" id="sync-dot"></span>
+      <span id="sync-label" style="margin-right:5px;">—</span>
+    </div>
+  </div>
+
+  <div class="main">
+    <!-- TRACKER -->
+    <div id="page-tracker" class="page active">
+      <div class="page-title">מעקב זמן</div>
+      <div class="page-sub">הפעילי שעון עצר או הוסיפי זמן ידנית</div>
+      <div id="tracker-status" class="status-bar loading" style="display:none;"></div>
+      <div id="client-cards"></div>
+    </div>
+
+    <!-- REPORT ALL -->
+    <div id="page-report-all" class="page">
+      <div class="page-title">דוח כולל</div>
+      <div class="page-sub">סיכום שעות והכנסות לפי תקופה</div>
+      <div class="filter-bar no-print">
+        <div class="form-group"><label>מתאריך</label><input type="date" id="ra-from" style="width:140px"></div>
+        <div class="form-group"><label>עד תאריך</label><input type="date" id="ra-to" style="width:140px"></div>
+        <button class="btn btn-primary" onclick="renderReportAll()">הצג דוח</button>
+        <button class="btn btn-print" onclick="printReport('all')">🖨 הדפס / PDF</button>
+      </div>
+      <div id="ra-content"></div>
+    </div>
+
+    <!-- REPORT CLIENT -->
+    <div id="page-report-client" class="page">
+      <div class="page-title">דוח לקוח</div>
+      <div class="page-sub">דוח מפורט יומי לפי לקוח</div>
+      <div class="filter-bar no-print">
+        <div class="form-group"><label>לקוח</label><select id="rc-client" style="width:150px"></select></div>
+        <div class="form-group"><label>סוג דוח</label><select id="rc-type" style="width:110px"><option value="monthly">חודשי</option><option value="weekly">שבועי</option></select></div>
+        <div class="form-group"><label>מתאריך</label><input type="date" id="rc-from" style="width:140px"></div>
+        <div class="form-group"><label>עד תאריך</label><input type="date" id="rc-to" style="width:140px"></div>
+        <button class="btn btn-primary" onclick="renderReportClient()">הצג דוח</button>
+        <button class="btn btn-print" onclick="printReport('client')">🖨 הדפס / PDF</button>
+      </div>
+      <div id="rc-content"></div>
+    </div>
+
+    <!-- LEADS -->
+    <div id="page-leads" class="page">
+      <div class="page-title">לידים</div>
+      <div class="page-sub">מעקב אחרי לקוחות פוטנציאליים</div>
+      <div class="card" style="margin-bottom:16px;">
+        <div class="card-title">הוספת ליד חדש</div>
+        <div class="grid-2">
+          <div class="form-group"><label>שם / חברה</label><input id="l-name" type="text"></div>
+          <div class="form-group"><label>סטטוס</label><select id="l-status"><option value="new">פנייה חדשה</option><option value="talk">בשיחות</option><option value="wait">ממתין לתשובה</option><option value="closed">לא נסגר</option><option value="won">נסגר!</option></select></div>
+        </div>
+        <div class="grid-2">
+          <div class="form-group"><label>תחום</label><input id="l-field" type="text"></div>
+          <div class="form-group"><label>תאריך פנייה</label><input id="l-date" type="date"></div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px;"><label>הערות</label><input id="l-notes" type="text"></div>
+        <button class="btn btn-primary" onclick="addLead()">+ הוסף ליד</button>
+      </div>
+      <div id="lead-list"></div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div id="page-settings" class="page">
+      <div class="page-title">הגדרות</div>
+      <div class="page-sub">ניהול לקוחות וחיבור</div>
+      <div class="card" style="margin-bottom:16px;">
+        <div class="card-title">הוספת לקוח חדש</div>
+        <div class="grid-2">
+          <div class="form-group"><label>שם לקוח</label><input id="c-name" type="text"></div>
+          <div class="form-group"><label>סוג חיוב</label><select id="c-type" onchange="toggleNewFields()"><option value="hourly">לפי שעות</option><option value="fixed">סכום קבוע</option></select></div>
+        </div>
+        <div class="grid-2">
+          <div class="form-group"><label>תעריף לשעה (₪)</label><input id="c-rate" type="number"></div>
+          <div class="form-group" id="c-fixed-grp" style="display:none;"><label>סכום קבוע חודשי (₪)</label><input id="c-fixed" type="number"></div>
+        </div>
+        <div class="grid-2">
+          <div class="form-group" id="c-hours-grp" style="display:none;"><label>שעות מוסכמות לחודש</label><input id="c-hours" type="number"></div>
+          <div class="form-group"><label>צבע</label><input id="c-color" type="color" value="#4f8ef7" style="height:36px;padding:2px;"></div>
+        </div>
+        <button class="btn btn-primary" onclick="addClient()">+ הוסף לקוח</button>
+      </div>
+      <div class="card-title" style="margin-bottom:10px;">לקוחות קיימים</div>
+      <div id="client-list"></div>
+
+      <div class="card" style="margin-top:20px;">
+        <div class="card-title">ייבוא מקובץ Excel</div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.7;">
+          כל טאב בקובץ = לקוח. עמודות נדרשות: תאריך, שעות, תיאור.<br>
+          אם הלקוח לא קיים במערכת — הוא יתווסף אוטומטית.
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <input type="file" id="excel-file" accept=".xlsx,.xls" style="width:auto;flex:1;">
+          <button class="btn btn-primary" onclick="importExcel()">ייבא קובץ</button>
+        </div>
+        <div id="import-status" style="margin-top:12px;font-size:13px;display:none;"></div>
+        <div id="import-preview" style="margin-top:12px;display:none;">
+          <div class="card-title" style="margin-bottom:8px;">תצוגה מקדימה — אשרי לפני הייבוא</div>
+          <div id="import-preview-content"></div>
+          <div style="display:flex;gap:8px;margin-top:12px;">
+            <button class="btn btn-success" onclick="confirmImport()">אשרי ויבאי</button>
+            <button class="btn" onclick="cancelImport()">בטלי</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- STOP DESCRIPTION MODAL -->
+<div id="stop-modal" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-title"><span id="stop-modal-title">על מה עבדת?</span><button class="btn" onclick="skipStopDesc()" style="border:none;padding:2px;font-size:16px;">✕</button></div>
+    <div style="font-size:13px;color:var(--text2);margin-bottom:12px;">אפשר לדלג — הזמן כבר נשמר</div>
+    <div class="form-group" style="margin-bottom:16px;"><label>תיאור עבודה (אופציונלי)</label><input type="text" id="stop-desc" placeholder="עבדתי על..." onkeydown="if(event.key==='Enter')saveStopDesc()"></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-success" onclick="saveStopDesc()" style="flex:1;justify-content:center;">שמור תיאור</button>
+      <button class="btn" onclick="skipStopDesc()" style="justify-content:center;">דלג</button>
+    </div>
+  </div>
+</div>
+
+<!-- EDIT LOG MODAL -->
+<div id="editlog-modal" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-title"><span>עריכת רישום</span><button class="btn" onclick="closeEditLog()" style="border:none;padding:2px;font-size:16px;">✕</button></div>
+    <div class="form-group" style="margin-bottom:10px;"><label>תיאור עבודה</label><input type="text" id="editlog-desc" placeholder="עבדתי על..." onkeydown="if(event.key==='Enter')saveEditLog()"></div>
+    <div class="form-group" style="margin-bottom:16px;"><label>תאריך</label><input type="date" id="editlog-date"></div>
+    <button class="btn btn-success" onclick="saveEditLog()" style="width:100%;justify-content:center;">שמור שינויים</button>
+  </div>
+</div>
+
+<!-- MANUAL MODAL -->
+<div id="manual-modal" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-title"><span id="modal-title-text">הוספת זמן ידנית</span><button class="btn" onclick="closeModal()" style="border:none;padding:2px;font-size:16px;">✕</button></div>
+    <div class="grid-2" style="margin-bottom:10px;">
+      <div class="form-group"><label>שעות</label><input id="m-hours" type="number" min="0" max="24" placeholder="0"></div>
+      <div class="form-group"><label>דקות</label><input id="m-mins" type="number" min="0" max="59" placeholder="0"></div>
+    </div>
+    <div class="form-group" style="margin-bottom:10px;"><label>תאריך</label><input id="m-date" type="date"></div>
+    <div class="form-group" style="margin-bottom:16px;"><label>תיאור עבודה</label><input id="m-desc" type="text" placeholder="עבודה על..."></div>
+    <button class="btn btn-success" onclick="saveManual()" style="width:100%;justify-content:center;">שמור</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+// ══════════════════════════ CONFIG & STATE
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxvIr6A6zHJlZ-AQskO_4C5NZ80bJpSu9m2doL7zZs1WvvndCG7M_hyeMpNQPj3ZpAO/exec';
+let state = { clients: [], logs: [], leads: [] };
+let timers = {}, intervals = {}, manualCIdx = null;
+const VAT = 0.18;
+const SHEET_CLIENTS = 'Clients';
+const SHEET_LOGS = 'Logs';
+const SHEET_LEADS = 'Leads';
+
+function saveConfig() { localStorage.setItem('haop_cfg_v2', 'connected'); }
+function loadConfig() { return !!localStorage.getItem('haop_cfg_v2'); }
+
+// ══════════════════════════ APPS SCRIPT API
+async function asRequest(params) {
+  const url = APPS_SCRIPT_URL + '?' + new URLSearchParams(params).toString();
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+async function readSheet(sheetName) {
+  const data = await asRequest({ action: 'read', sheet: sheetName });
+  return data.data || [];
+}
+
+async function writeSheet(sheetName, rows) {
+  await asRequest({ action: 'write', sheet: sheetName, rows: JSON.stringify(rows) });
+}
+
+async function appendToSheet(sheetName, row) {
+  await asRequest({ action: 'append', sheet: sheetName, row: JSON.stringify(row) });
+}
+
+// ══════════════════════════ LOAD ALL
+async function loadAll() {
+  setSyncStatus('loading', 'טוען...');
+  try {
+    const [cr, lr, ldr] = await Promise.all([
+      readSheet(SHEET_CLIENTS),
+      readSheet(SHEET_LOGS),
+      readSheet(SHEET_LEADS)
+    ]);
+    state.clients = cr.filter(r => r[0] && r[0] !== 'id').map(r => ({
+      id: r[0], name: r[1]||'', rate: parseFloat(r[2])||0, type: r[3]||'hourly',
+      fixedAmount: parseFloat(r[4])||0, monthlyHours: parseFloat(r[5])||0, color: '#4f8ef7'
+    }));
+    state.logs = lr.filter(r => r[0] && r[0] !== 'id').map(r => ({
+      id: r[0], cid: r[1]||'', secs: parseInt(r[2])||0, date: r[3]||'', desc: r[4]||''
+    }));
+    state.leads = ldr.filter(r => r[0] && r[0] !== 'id').map(r => ({
+      id: r[0], name: r[1]||'', status: r[2]||'new', field: r[3]||'', date: r[4]||'', notes: r[5]||''
+    }));
+    setSyncStatus('ok', 'מסונכרן');
+    render();
+  } catch(e) { setSyncStatus('err', 'שגיאה בטעינה'); }
+}
+
+async function saveClients() {
+  const rows = [['id','name','rate','type','fixedAmount','monthlyHours'],
+    ...state.clients.map(c => [c.id, c.name, c.rate, c.type, c.fixedAmount, c.monthlyHours])];
+  await writeSheet(SHEET_CLIENTS, rows);
+}
+async function appendLog(log) {
+  await appendToSheet(SHEET_LOGS, [log.id, log.cid, log.secs, log.date, log.desc||'']);
+}
+async function saveLogs() {
+  const rows = [['id','cid','secs','date','desc'],
+    ...state.logs.map(l => [l.id, l.cid, l.secs, l.date, l.desc||''])];
+  await writeSheet(SHEET_LOGS, rows);
+}
+async function saveLeads() {
+  const rows = [['id','name','status','field','date','notes'],
+    ...state.leads.map(l => [l.id, l.name, l.status, l.field, l.date, l.notes])];
+  await writeSheet(SHEET_LEADS, rows);
+}
+
+// ══════════════════════════ UI HELPERS
+function setSyncStatus(type, msg) {
+  const dot = document.getElementById('sync-dot');
+  const lbl = document.getElementById('sync-label');
+  if (dot) { dot.className = 'sync-dot ' + (type === 'ok' ? 'ok' : type === 'err' ? 'err' : 'spin'); }
+  if (lbl) lbl.textContent = msg;
+  const slbl = document.getElementById('sync-status-label');
+  if (slbl) slbl.textContent = msg;
+}
+function showPage(p) {
+  document.querySelectorAll('.page').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(x => x.classList.remove('active'));
+  document.getElementById('page-' + p).classList.add('active');
+  document.querySelector(`[onclick="showPage('${p}')"]`).classList.add('active');
+  if (p === 'report-all') renderReportAll();
+  if (p === 'report-client') { populateClientSelect(); renderReportClient(); }
+}
+function fmt(s) { const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = s%60; return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}` : `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; }
+function secsToHrsLabel(s) { const h = Math.floor(s/3600), m = Math.round((s%3600)/60); return m > 0 ? `${h}:${String(m).padStart(2,'0')}h` : `${h}h`; }
+function sameMonth(d, ref) { const dt = new Date(d); return dt.getFullYear() === ref.getFullYear() && dt.getMonth() === ref.getMonth(); }
+function inRange(d, from, to) { const dt = new Date(d); return dt >= from && dt <= to; }
+function monthKey(d) { const dt = new Date(d); return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}`; }
+function monthLabel(k) { const [y,m] = k.split('-'); return new Date(y, m-1, 1).toLocaleDateString('he-IL', {year:'numeric',month:'long'}); }
+function getWeekKey(dt) { const d = new Date(Date.UTC(dt.getFullYear(),dt.getMonth(),dt.getDate())); const day = d.getUTCDay()||7; d.setUTCDate(d.getUTCDate()+4-day); const ys = new Date(Date.UTC(d.getUTCFullYear(),0,1)); return `${d.getUTCFullYear()}-W${String(Math.ceil((((d-ys)/86400000)+1)/7)).padStart(2,'0')}`; }
+function weekLabel(dt) { const d = new Date(dt); const day = d.getDay()||7; const mon = new Date(d); mon.setDate(d.getDate()-day+1); const sun = new Date(mon); sun.setDate(mon.getDate()+6); return `${mon.toLocaleDateString('he-IL',{day:'numeric',month:'numeric'})} — ${sun.toLocaleDateString('he-IL',{day:'numeric',month:'numeric'})}`; }
+function uid() { return 'i' + Date.now() + Math.random().toString(36).substr(2,5); }
+
+function render() { renderClients(); renderClientList(); renderLeads(); initDates(); }
+
+// ══════════════════════════ TRACKER
+function renderClients() {
+  const g = document.getElementById('client-cards');
+  if (!state.clients.length) { g.innerHTML = '<div style="color:var(--text2);font-size:13px;padding:20px 0;">אין לקוחות. הוסיפי בלשונית הגדרות.</div>'; return; }
+  const now = new Date();
+  g.innerHTML = state.clients.map((c, i) => {
+    const running = timers[c.id] && timers[c.id].running;
+    const elapsed = timers[c.id] ? timers[c.id].elapsed : 0;
+    const mLogs = state.logs.filter(l => l.cid === c.id && sameMonth(l.date, now));
+    const mSecs = mLogs.reduce((a, l) => a + l.secs, 0);
+    const mEarn = c.type === 'fixed' ? c.fixedAmount : Math.round(mSecs/3600 * c.rate);
+    return `<div class="card${running?' running':''}">
+      <div class="client-header">
+        <div>
+          <div class="client-name">
+            <span style="width:10px;height:10px;border-radius:50%;background:${c.color};display:inline-block;"></span>
+            ${c.name}
+            ${running ? '<span class="badge badge-run">פועל</span>' : ''}
+            <span class="badge ${c.type==='fixed'?'badge-f':'badge-h'}">${c.type==='fixed'?'קבוע':'שעות'}</span>
+          </div>
+          <div class="client-sub">${c.type==='fixed'?`₪${c.fixedAmount.toLocaleString()} קבוע | ₪${c.rate}/h`:`₪${c.rate}/h`}${c.monthlyHours?' | '+c.monthlyHours+'h מוסכם':''}</div>
+        </div>
+        <button class="btn" onclick="openManual(${i})" style="font-size:12px;">+ הוסף זמן</button>
+      </div>
+      <div class="client-meta">
+        <div class="meta-item">החודש: <strong>${(mSecs/3600).toFixed(1)}h</strong></div>
+        <div class="meta-item">לחיוב: <strong>₪${mEarn.toLocaleString()}</strong></div>
+      </div>
+      <div class="timer-row">
+        <div class="timer-disp" id="disp-${c.id}">${fmt(elapsed)}</div>
+        ${running
+          ? `<button class="btn btn-timer-stop" onclick="stopTimer('${c.id}')">⏸ עצור</button>`
+          : `<button class="btn btn-timer-start" onclick="startTimer('${c.id}')">▶ התחל</button>`}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function startTimer(cid) {
+  Object.keys(timers).forEach(id => { if (timers[id] && timers[id].running) stopTimer(id); });
+  if (!timers[cid]) timers[cid] = { elapsed: 0, running: false };
+  timers[cid].running = true; timers[cid].startTs = Date.now(); timers[cid].baseElapsed = timers[cid].elapsed;
+  intervals[cid] = setInterval(() => { const el = document.getElementById('disp-'+cid); if (el) { timers[cid].elapsed = timers[cid].baseElapsed + Math.floor((Date.now()-timers[cid].startTs)/1000); el.textContent = fmt(timers[cid].elapsed); } }, 1000);
+  renderClients();
+}
+let pendingStopLog = null;
+
+async function stopTimer(cid) {
+  if (!timers[cid] || !timers[cid].running) return;
+  clearInterval(intervals[cid]);
+  timers[cid].elapsed = timers[cid].baseElapsed + Math.floor((Date.now()-timers[cid].startTs)/1000);
+  timers[cid].running = false;
+  if (timers[cid].elapsed > 5) {
+    const log = { id: uid(), cid, secs: timers[cid].elapsed, date: new Date().toISOString(), desc: '' };
+    state.logs.push(log);
+    setSyncStatus('loading', 'שומר...');
+    try { await appendLog(log); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה בשמירה'); }
+    // open desc modal
+    pendingStopLog = log;
+    const c = state.clients.find(x => x.id === cid);
+    document.getElementById('stop-modal-title').textContent = (c ? c.name : '') + ' — על מה עבדת?';
+    document.getElementById('stop-desc').value = '';
+    document.getElementById('stop-modal').classList.add('open');
+    setTimeout(() => document.getElementById('stop-desc').focus(), 100);
+  }
+  timers[cid].elapsed = 0; renderClients();
+}
+
+async function saveStopDesc() {
+  if (!pendingStopLog) { document.getElementById('stop-modal').classList.remove('open'); return; }
+  const desc = document.getElementById('stop-desc').value.trim();
+  if (desc) {
+    pendingStopLog.desc = desc;
+    // update in state
+    const idx = state.logs.findIndex(l => l.id === pendingStopLog.id);
+    if (idx >= 0) state.logs[idx].desc = desc;
+    // update in sheets — rewrite all logs
+    setSyncStatus('loading', 'שומר...');
+    try { await saveLogs(); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה'); }
+  }
+  pendingStopLog = null;
+  document.getElementById('stop-modal').classList.remove('open');
+}
+
+function skipStopDesc() {
+  pendingStopLog = null;
+  document.getElementById('stop-modal').classList.remove('open');
+}
+
+// ── Edit existing log
+let editLogId = null;
+function openEditLog(logId) {
+  const log = state.logs.find(l => l.id === logId); if (!log) return;
+  editLogId = logId;
+  document.getElementById('editlog-desc').value = log.desc || '';
+  document.getElementById('editlog-date').value = log.date ? new Date(log.date).toISOString().split('T')[0] : '';
+  document.getElementById('editlog-modal').classList.add('open');
+  setTimeout(() => document.getElementById('editlog-desc').focus(), 100);
+}
+function closeEditLog() { editLogId = null; document.getElementById('editlog-modal').classList.remove('open'); }
+async function saveEditLog() {
+  const log = state.logs.find(l => l.id === editLogId); if (!log) return;
+  log.desc = document.getElementById('editlog-desc').value.trim();
+  const dateVal = document.getElementById('editlog-date').value;
+  if (dateVal) log.date = new Date(dateVal + 'T12:00:00').toISOString();
+  setSyncStatus('loading', 'שומר...');
+  try { await saveLogs(); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה'); }
+  closeEditLog();
+  // re-render if report is open
+  const rcp = document.getElementById('page-report-client');
+  if (rcp && rcp.classList.contains('active')) renderReportClient();
+}
+
+// ══════════════════════════ MANUAL TIME
+function openManual(i) {
+  manualCIdx = i;
+  document.getElementById('modal-title-text').textContent = state.clients[i].name + ' — הוספת זמן';
+  document.getElementById('m-hours').value = ''; document.getElementById('m-mins').value = '';
+  document.getElementById('m-desc').value = ''; document.getElementById('m-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('manual-modal').classList.add('open');
+}
+function closeModal() { document.getElementById('manual-modal').classList.remove('open'); }
+async function saveManual() {
+  const c = state.clients[manualCIdx];
+  const h = parseInt(document.getElementById('m-hours').value)||0;
+  const m = parseInt(document.getElementById('m-mins').value)||0;
+  const secs = h*3600 + m*60; if (!secs) return;
+  const dateVal = document.getElementById('m-date').value;
+  const log = { id: uid(), cid: c.id, secs, date: dateVal ? new Date(dateVal+'T12:00:00').toISOString() : new Date().toISOString(), desc: document.getElementById('m-desc').value||'ידני' };
+  state.logs.push(log);
+  setSyncStatus('loading', 'שומר...');
+  try { await appendLog(log); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה'); }
+  closeModal(); renderClients();
+}
+
+// ══════════════════════════ REPORTS
+function initDates() {
+  const now = new Date(); const y = now.getFullYear(), m = String(now.getMonth()+1).padStart(2,'0');
+  const last = new Date(y, now.getMonth()+1, 0).getDate();
+  ['ra-from','rc-from'].forEach(id => { const el = document.getElementById(id); if (el && !el.value) el.value = `${y}-${m}-01`; });
+  ['ra-to','rc-to'].forEach(id => { const el = document.getElementById(id); if (el && !el.value) el.value = `${y}-${m}-${String(last).padStart(2,'0')}`; });
+}
+
+function buildAllData() {
+  const fromVal = document.getElementById('ra-from').value, toVal = document.getElementById('ra-to').value;
+  if (!fromVal||!toVal) return null;
+  const from = new Date(fromVal), to = new Date(toVal); to.setHours(23,59,59);
+  const rangeLogs = state.logs.filter(l => inRange(l.date, from, to));
+  const months = [...new Set(rangeLogs.map(l => monthKey(l.date)))].sort();
+  const buildMonth = mLogs => {
+    let totalNet = 0;
+    const rows = state.clients.map(c => {
+      const secs = mLogs.filter(l => l.cid === c.id).reduce((a,l) => a+l.secs, 0);
+      const hrs = secs/3600; const earn = c.type==='fixed' ? c.fixedAmount : Math.round(hrs*c.rate);
+      totalNet += earn;
+      return { name:c.name, type:c.type, monthlyHours:c.monthlyHours, fixedAmount:c.fixedAmount, rate:c.rate, hrs, earn, secs };
+    }).filter(r => r.secs > 0 || r.type === 'fixed');
+    return { rows, totalNet };
+  };
+  if (!months.length) { const {rows,totalNet} = buildMonth(rangeLogs); return {single:true,label:`${fromVal} — ${toVal}`,rows,totalNet,fromVal,toVal}; }
+  const mData = months.map(mk => ({key:mk,label:monthLabel(mk),...buildMonth(rangeLogs.filter(l=>monthKey(l.date)===mk))}));
+  return { single: months.length===1, months: mData, grandNet: mData.reduce((a,m)=>a+m.totalNet,0), fromVal, toVal };
+}
+
+function buildClientData() {
+  const cid = document.getElementById('rc-client').value, rtype = document.getElementById('rc-type').value;
+  const fromVal = document.getElementById('rc-from').value, toVal = document.getElementById('rc-to').value;
+  if (!cid||!fromVal||!toVal) return null;
+  const c = state.clients.find(x => x.id === cid); if (!c) return null;
+  const from = new Date(fromVal), to = new Date(toVal); to.setHours(23,59,59);
+  const rangeLogs = state.logs.filter(l => l.cid === cid && inRange(l.date, from, to));
+  const byDay = {};
+  rangeLogs.forEach(l => { const day = new Date(l.date).toISOString().split('T')[0]; if (!byDay[day]) byDay[day]={secs:0,descs:[]}; byDay[day].secs+=l.secs; if (l.desc&&l.desc!=='שעון עצר') byDay[day].descs.push(l.desc); });
+  let groups = [];
+  if (rtype==='weekly') { const bw={}; Object.entries(byDay).sort().forEach(([day,data])=>{const dt=new Date(day);const wk=getWeekKey(dt);if(!bw[wk])bw[wk]={days:{},label:weekLabel(dt)};bw[wk].days[day]=data;}); groups=Object.entries(bw).sort().map(([k,v])=>({key:k,label:v.label,days:v.days})); }
+  else { const bm={}; Object.entries(byDay).sort().forEach(([day,data])=>{const mk=day.substring(0,7);if(!bm[mk])bm[mk]={days:{},label:monthLabel(mk)};bm[mk].days[day]=data;}); groups=Object.entries(bm).sort().map(([k,v])=>({key:k,label:v.label,days:v.days})); }
+  const totalSecs = rangeLogs.reduce((a,l)=>a+l.secs,0); const totalHrs = totalSecs/3600;
+  return { c, groups, totalHrs, earn: c.type==='fixed'?c.fixedAmount:Math.round(totalHrs*c.rate), fromVal, toVal };
+}
+
+function renderReportAll() {
+  const d = buildAllData(); if (!d) return;
+  const renderMonth = (rows, totalNet, label) => {
+    const vat = Math.round(totalNet*VAT);
+    let h = `<div style="font-size:15px;font-weight:600;margin:16px 0 8px;color:var(--accent);">${label}</div>`;
+    h += `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>לקוח</th><th>סוג</th><th>שעות מוסכמות</th><th>סכום קבוע</th><th>שעות בפועל</th><th>סכום לתשלום</th></tr></thead><tbody>`;
+    rows.forEach(r => { h += `<tr><td>${r.name}</td><td><span class="badge ${r.type==='fixed'?'badge-f':'badge-h'}">${r.type==='fixed'?'קבוע':'שעות'}</span></td><td>${r.monthlyHours||'—'}</td><td>${r.type==='fixed'?'₪'+r.fixedAmount.toLocaleString():'—'}</td><td>${r.hrs.toFixed(2)}h</td><td><strong>₪${r.earn.toLocaleString()}</strong></td></tr>`; });
+    h += `<tr class="total-row"><td colspan="4">סה"כ</td><td></td><td>ללא מע"מ: ₪${totalNet.toLocaleString()} | מע"מ: ₪${vat.toLocaleString()} | כולל מע"מ: ₪${(totalNet+vat).toLocaleString()}</td></tr></tbody></table></div>`;
+    return h;
+  };
+  let html = '';
+  if (d.single) { html = renderMonth(d.rows||d.months[0].rows, d.totalNet||d.months[0].totalNet, d.label||d.months[0].label); }
+  else { d.months.forEach(m => { html += renderMonth(m.rows, m.totalNet, m.label); }); const gv=Math.round(d.grandNet*VAT); html+=`<div class="card" style="margin-top:16px;"><div class="card-title">סיכום כולל לתקופה</div><div class="grid-3"><div class="stat-card"><div class="stat-label">ללא מע"מ</div><div class="stat-val">₪${d.grandNet.toLocaleString()}</div></div><div class="stat-card"><div class="stat-label">מע"מ 18%</div><div class="stat-val">₪${gv.toLocaleString()}</div></div><div class="stat-card"><div class="stat-label">כולל מע"מ</div><div class="stat-val">₪${(d.grandNet+gv).toLocaleString()}</div></div></div></div>`; }
+  document.getElementById('ra-content').innerHTML = html || '<div style="color:var(--text2);font-size:13px;">אין נתונים לתקופה זו</div>';
+}
+
+function renderReportClient() {
+  const d = buildClientData(); if (!d) return;
+  const { c, groups, totalHrs, earn, fromVal, toVal } = d;
+  const earnVat = Math.round(earn*VAT);
+  let html = `<div style="font-size:15px;font-weight:600;margin-bottom:12px;">${c.name} — ${fromVal} עד ${toVal}</div>`;
+  if (!groups.length) { html += '<div style="color:var(--text2);font-size:13px;">אין נתונים לתקופה זו</div>'; document.getElementById('rc-content').innerHTML = html; return; }
+  groups.forEach(grp => {
+    const grpSecs = Object.values(grp.days).reduce((a,dd)=>a+dd.secs,0);
+    html += `<div style="font-size:12px;font-weight:600;color:var(--text2);margin:14px 0 6px;text-transform:uppercase;letter-spacing:.06em;">${grp.label}</div>`;
+    html += `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>תאריך</th><th>שעות</th><th>פירוט עבודה</th><th></th></tr></thead><tbody>`;
+    Object.entries(grp.days).sort().forEach(([day,data]) => {
+      const dt=new Date(day);
+      // collect log ids for this day for editing (use first log of day)
+      const dayLogs = state.logs.filter(l => l.cid === d.c.id && new Date(l.date).toISOString().split('T')[0] === day);
+      const editBtns = dayLogs.map(l => `<button class="btn" onclick="openEditLog('${l.id}')" style="font-size:11px;padding:3px 8px;">✏</button>`).join('');
+      html+=`<tr><td>${dt.toLocaleDateString('he-IL',{weekday:'short',day:'numeric',month:'numeric'})}</td><td><strong>${secsToHrsLabel(data.secs)}</strong></td><td style="color:var(--text2);">${data.descs.length?data.descs.join(', '):'—'}</td><td style="white-space:nowrap;">${editBtns}</td></tr>`;
+    });
+    html += `<tr class="total-row"><td>סה"כ</td><td>${secsToHrsLabel(grpSecs)}</td><td></td></tr></tbody></table></div>`;
+  });
+  const diff = totalHrs - (c.monthlyHours||0);
+  html += `<div class="card" style="margin-top:16px;"><div class="card-title">סיכום</div><div class="grid-3" style="margin-bottom:12px;">
+    <div class="stat-card"><div class="stat-label">סה"כ שעות</div><div class="stat-val">${totalHrs.toFixed(2)}h</div></div>`;
+  if (c.type==='fixed') { html+=`<div class="stat-card"><div class="stat-label">שעות מוסכמות</div><div class="stat-val">${c.monthlyHours||0}h</div></div><div class="stat-card"><div class="stat-label">חריגה / חוסר</div><div class="stat-val ${diff>=0?'pos':'neg'}">${diff>=0?'+':''}${diff.toFixed(2)}h</div></div>`; }
+  else { html+=`<div class="stat-card"><div class="stat-label">תעריף</div><div class="stat-val">₪${c.rate}/h</div></div>`; }
+  html += `</div><div style="font-size:13px;border-top:1px solid var(--border);padding-top:12px;display:flex;gap:24px;flex-wrap:wrap;">`;
+  if (c.type==='fixed') html += `<span>סכום קבוע מוסכם: <strong>₪${c.fixedAmount.toLocaleString()}</strong></span>`;
+  html += `<span>ללא מע"מ: <strong>₪${earn.toLocaleString()}</strong></span><span>מע"מ 18%: <strong>₪${earnVat.toLocaleString()}</strong></span><span>כולל מע"מ: <strong>₪${(earn+earnVat).toLocaleString()}</strong></span></div></div>`;
+  document.getElementById('rc-content').innerHTML = html;
+}
+
+function populateClientSelect() {
+  const sel = document.getElementById('rc-client'); const cur = sel.value;
+  sel.innerHTML = state.clients.map(c => `<option value="${c.id}"${c.id===cur?' selected':''}>${c.name}</option>`).join('');
+}
+
+// ══════════════════════════ PRINT
+function printReport(type) {
+  let title='', bodyHtml='';
+  if (type==='all') { const d=buildAllData(); if (!d){alert('הצג דוח תחילה');return;} title=`דוח כולל — ${d.fromVal} עד ${d.toVal}`; bodyHtml=buildAllPrint(d); }
+  else { const d=buildClientData(); if (!d){alert('הצג דוח תחילה');return;} title=`דוח ${d.c.name} — ${d.fromVal} עד ${d.toVal}`; bodyHtml=buildClientPrint(d); }
+  const win=window.open('','_blank','width=900,height=700');
+  win.document.write(`<!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="utf-8"><title>${title}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Heebo',Arial,sans-serif;direction:rtl;color:#111;background:#fff;padding:30px;font-size:13px}.header{display:flex;justify-content:space-between;padding-bottom:16px;border-bottom:2px solid #1e2840;margin-bottom:20px}.title{font-size:20px;font-weight:800;color:#1e2840}.sub{font-size:12px;color:#666;margin-top:3px}.sec-title{font-size:14px;font-weight:700;color:#1e2840;margin:18px 0 8px;padding-bottom:4px;border-bottom:1.5px solid #c5d0e0}table{width:100%;border-collapse:collapse;margin-bottom:14px;font-size:13px}th{background:#1e2840;color:#fff;padding:8px 10px;text-align:right;font-weight:600;font-size:12px}td{padding:7px 10px;border-bottom:0.5px solid #e0e4ea;vertical-align:top}tr:nth-child(even) td{background:#f5f7fc}tr.tr{font-weight:700;background:#e8ecf5;border-top:1.5px solid #1e2840}.sum{background:#1e2840;color:#fff;padding:14px 18px;border-radius:8px;margin-top:14px;display:flex;gap:28px;flex-wrap:wrap}.si{display:flex;flex-direction:column;gap:2px}.sl{font-size:11px;opacity:.7}.sv{font-size:16px;font-weight:700}.sbox{background:#f5f7fc;border:1px solid #c5d0e0;border-radius:8px;padding:14px 18px;margin-top:14px}.srow{display:flex;justify-content:space-between;padding:5px 0;border-bottom:0.5px solid #dde2ea;font-size:13px}.srow:last-child{border:none;font-weight:700;font-size:14px}.pos{color:#1a9e6e}.neg{color:#d85a30}.footer{margin-top:28px;padding-top:10px;border-top:1px solid #e0e4ea;font-size:11px;color:#999;text-align:center}@media print{.noprint{display:none!important}}</style></head><body>
+  <div class="noprint" style="margin-bottom:18px;display:flex;gap:10px;"><button onclick="window.print()" style="background:#1e2840;color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-family:'Heebo',sans-serif;font-size:13px;">🖨 הדפס / שמור כ-PDF</button><button onclick="window.close()" style="background:none;border:1px solid #ccc;padding:8px 14px;border-radius:6px;cursor:pointer;font-family:'Heebo',sans-serif;font-size:13px;">סגור</button></div>
+  <div class="header"><div><div class="title">${title}</div><div class="sub">הופק ב-${new Date().toLocaleDateString('he-IL',{day:'numeric',month:'long',year:'numeric'})}</div></div></div>
+  ${bodyHtml}<div class="footer">דוח זה הופק ממערכת ניהול הזמן — האופרטיבית</div></body></html>`);
+  win.document.close();
+}
+function buildAllPrint(d) {
+  const rm=(rows,totalNet,label)=>{const vat=Math.round(totalNet*VAT);let h=`<div class="sec-title">${label}</div><table><thead><tr><th>לקוח</th><th>סוג חיוב</th><th>שעות מוסכמות</th><th>סכום קבוע</th><th>שעות בפועל</th><th>סכום לתשלום</th></tr></thead><tbody>`;rows.forEach(r=>{h+=`<tr><td>${r.name}</td><td>${r.type==='fixed'?'קבוע':'שעות'}</td><td>${r.monthlyHours||'—'}</td><td>${r.type==='fixed'?'₪'+r.fixedAmount.toLocaleString():'—'}</td><td>${r.hrs.toFixed(2)}h</td><td><strong>₪${r.earn.toLocaleString()}</strong></td></tr>`;});h+=`<tr class="tr"><td colspan="4">סה"כ לחיוב</td><td></td><td>₪${totalNet.toLocaleString()}</td></tr></tbody></table><div class="sbox"><div class="srow"><span>ללא מע"מ</span><span>₪${totalNet.toLocaleString()}</span></div><div class="srow"><span>מע"מ 18%</span><span>₪${vat.toLocaleString()}</span></div><div class="srow"><span>סה"כ לתשלום כולל מע"מ</span><span>₪${(totalNet+vat).toLocaleString()}</span></div></div>`;return h;};
+  if (d.single) return rm(d.rows||d.months[0].rows,d.totalNet||d.months[0].totalNet,d.label||d.months[0].label);
+  let h='';d.months.forEach(m=>{h+=rm(m.rows,m.totalNet,m.label);});const gv=Math.round(d.grandNet*VAT);h+=`<div class="sum"><div class="si"><div class="sl">ללא מע"מ</div><div class="sv">₪${d.grandNet.toLocaleString()}</div></div><div class="si"><div class="sl">מע"מ 18%</div><div class="sv">₪${gv.toLocaleString()}</div></div><div class="si"><div class="sl">כולל מע"מ</div><div class="sv">₪${(d.grandNet+gv).toLocaleString()}</div></div></div>`;return h;
+}
+function buildClientPrint(d) {
+  const {c,groups,totalHrs,earn}=d;const earnVat=Math.round(earn*VAT);let h='';
+  groups.forEach(grp=>{const gs=Object.values(grp.days).reduce((a,dd)=>a+dd.secs,0);h+=`<div class="sec-title">${grp.label}</div><table><thead><tr><th>תאריך</th><th>שעות</th><th>פירוט עבודה</th></tr></thead><tbody>`;Object.entries(grp.days).sort().forEach(([day,data])=>{const dt=new Date(day);h+=`<tr><td>${dt.toLocaleDateString('he-IL',{weekday:'long',day:'numeric',month:'long'})}</td><td><strong>${secsToHrsLabel(data.secs)}</strong></td><td>${data.descs.length?data.descs.join(', '):'—'}</td></tr>`;});h+=`<tr class="tr"><td>סה"כ</td><td>${secsToHrsLabel(gs)}</td><td></td></tr></tbody></table>`;});
+  const diff=totalHrs-(c.monthlyHours||0);
+  h+=`<div class="sbox"><div class="srow"><span>סה"כ שעות</span><span>${totalHrs.toFixed(2)}h</span></div>`;
+  if(c.type==='fixed'){h+=`<div class="srow"><span>שעות מוסכמות</span><span>${c.monthlyHours||0}h</span></div><div class="srow"><span>חריגה / חוסר</span><span class="${diff>=0?'pos':'neg'}">${diff>=0?'+':''}${diff.toFixed(2)}h</span></div><div class="srow"><span>סכום קבוע מוסכם</span><span>₪${c.fixedAmount.toLocaleString()}</span></div>`;}
+  else{h+=`<div class="srow"><span>תעריף שעתי</span><span>₪${c.rate}/h</span></div>`;}
+  h+=`<div class="srow"><span>לתשלום ללא מע"מ</span><span>₪${earn.toLocaleString()}</span></div><div class="srow"><span>מע"מ 18%</span><span>₪${earnVat.toLocaleString()}</span></div><div class="srow"><span>סה"כ לתשלום כולל מע"מ</span><span>₪${(earn+earnVat).toLocaleString()}</span></div></div>`;
+  return h;
+}
+
+// ══════════════════════════ CLIENTS CRUD
+function toggleNewFields() { const t=document.getElementById('c-type').value; document.getElementById('c-fixed-grp').style.display=t==='fixed'?'':'none'; document.getElementById('c-hours-grp').style.display=t==='fixed'?'':'none'; }
+async function addClient() {
+  const name=document.getElementById('c-name').value.trim(); const rate=parseFloat(document.getElementById('c-rate').value); const type=document.getElementById('c-type').value;
+  if (!name||!rate) return;
+  const c={id:uid(),name,rate,type,fixedAmount:type==='fixed'?(parseInt(document.getElementById('c-fixed').value)||0):0,monthlyHours:type==='fixed'?(parseInt(document.getElementById('c-hours').value)||0):0,color:'#4f8ef7'};
+  state.clients.push(c); setSyncStatus('loading','שומר...');
+  try { await saveClients(); setSyncStatus('ok','מסונכרן'); } catch(e) { setSyncStatus('err','שגיאה'); }
+  render(); ['c-name','c-rate','c-fixed','c-hours'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+}
+async function deleteClient(i) { if (!confirm('למחוק לקוח זה?')) return; state.clients.splice(i,1); setSyncStatus('loading','שומר...'); try{await saveClients();setSyncStatus('ok','מסונכרן');}catch(e){setSyncStatus('err','שגיאה');} render(); }
+function toggleEdit(i) { document.getElementById('edit-'+i).classList.toggle('open'); }
+function toggleEditFields(i) { const t=document.getElementById('et-'+i).value; document.getElementById('ef-'+i).style.display=t==='fixed'?'':'none'; document.getElementById('eh-'+i).style.display=t==='fixed'?'':'none'; }
+async function saveEdit(i) {
+  const c=state.clients[i];
+  c.name=document.getElementById('en-'+i).value.trim()||c.name;
+  c.rate=parseFloat(document.getElementById('er-'+i).value)||c.rate;
+  c.type=document.getElementById('et-'+i).value;
+  c.fixedAmount=c.type==='fixed'?(parseInt(document.getElementById('efa-'+i).value)||0):0;
+  c.monthlyHours=c.type==='fixed'?(parseInt(document.getElementById('em-'+i).value)||0):0;
+  setSyncStatus('loading','שומר...'); try{await saveClients();setSyncStatus('ok','מסונכרן');}catch(e){setSyncStatus('err','שגיאה');} render();
+}
+function renderClientList() {
+  const el=document.getElementById('client-list');
+  if (!state.clients.length){el.innerHTML='<div style="color:var(--text2);font-size:13px;">אין לקוחות</div>';return;}
+  el.innerHTML=state.clients.map((c,i)=>`
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <div style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:${c.color};display:inline-block;"></span><span style="font-weight:600;">${c.name}</span><span class="badge ${c.type==='fixed'?'badge-f':'badge-h'}">${c.type==='fixed'?'קבוע':'שעות'}</span></div>
+        <div style="display:flex;gap:6px;"><button class="btn" onclick="toggleEdit(${i})" style="font-size:12px;">✏ ערוך</button><button class="btn btn-danger" onclick="deleteClient(${i})" style="font-size:12px;">🗑</button></div>
+      </div>
+      <div style="font-size:12px;color:var(--text2);">₪${c.rate}/h${c.type==='fixed'?' | ₪'+c.fixedAmount.toLocaleString()+' קבוע':''}${c.monthlyHours?' | '+c.monthlyHours+'h מוסכם':''}</div>
+      <div class="edit-panel" id="edit-${i}">
+        <div class="grid-2"><div class="form-group"><label>שם</label><input id="en-${i}" type="text" value="${c.name}"></div><div class="form-group"><label>סוג חיוב</label><select id="et-${i}" onchange="toggleEditFields(${i})"><option value="hourly"${c.type==='hourly'?' selected':''}>לפי שעות</option><option value="fixed"${c.type==='fixed'?' selected':''}>סכום קבוע</option></select></div></div>
+        <div class="grid-2"><div class="form-group"><label>תעריף לשעה (₪)</label><input id="er-${i}" type="number" value="${c.rate}"></div><div class="form-group" id="ef-${i}" style="display:${c.type==='fixed'?'':'none'};"><label>סכום קבוע (₪)</label><input id="efa-${i}" type="number" value="${c.fixedAmount||''}"></div></div>
+        <div class="grid-2"><div class="form-group" id="eh-${i}" style="display:${c.type==='fixed'?'':'none'};"><label>שעות מוסכמות</label><input id="em-${i}" type="number" value="${c.monthlyHours||''}"></div></div>
+        <button class="btn btn-primary" onclick="saveEdit(${i})">שמור שינויים</button>
+      </div>
+    </div>`).join('');
+  populateClientSelect();
+}
+
+// ══════════════════════════ LEADS
+function renderLeads() {
+  const sl={new:'פנייה חדשה',talk:'בשיחות',wait:'ממתין',closed:'לא נסגר',won:'נסגר!'};
+  const ll=document.getElementById('lead-list');
+  if (!state.leads||!state.leads.length){ll.innerHTML='<div style="color:var(--text2);font-size:13px;">אין לידים עדיין</div>';return;}
+  ll.innerHTML=state.leads.map((l,i)=>`
+    <div class="lead-card">
+      <div class="lead-header"><div class="lead-name">${l.name}</div><div style="display:flex;gap:6px;align-items:center;"><span class="badge badge-${l.status}">${sl[l.status]||l.status}</span><button class="btn btn-danger" onclick="deleteLead(${i})" style="font-size:12px;">🗑</button></div></div>
+      ${l.field?`<div style="font-size:12px;color:var(--text2);">${l.field}${l.date?' · '+new Date(l.date).toLocaleDateString('he-IL'):''}</div>`:''}
+      ${l.notes?`<div style="font-size:12px;color:var(--text2);">${l.notes}</div>`:''}
+    </div>`).join('');
+}
+async function addLead() {
+  const name=document.getElementById('l-name').value.trim(); if (!name) return;
+  const l={id:uid(),name,status:document.getElementById('l-status').value,field:document.getElementById('l-field').value,date:document.getElementById('l-date').value,notes:document.getElementById('l-notes').value};
+  state.leads.push(l); setSyncStatus('loading','שומר...'); try{await saveLeads();setSyncStatus('ok','מסונכרן');}catch(e){setSyncStatus('err','שגיאה');}
+  renderLeads(); ['l-name','l-field','l-date','l-notes'].forEach(id=>document.getElementById(id).value='');
+}
+async function deleteLead(i) { state.leads.splice(i,1); setSyncStatus('loading','שומר...'); try{await saveLeads();setSyncStatus('ok','מסונכרן');}catch(e){setSyncStatus('err','שגיאה');} renderLeads(); }
+
+// ══════════════════════════ EXCEL IMPORT
+let importData = null;
+
+async function importExcel() {
+  const file = document.getElementById('excel-file').files[0];
+  if (!file) { showImportStatus('נא לבחור קובץ', 'err'); return; }
+  showImportStatus('קורא קובץ...', 'loading');
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+    importData = [];
+    wb.SheetNames.forEach(sheetName => {
+      const ws = wb.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false });
+      if (rows.length < 2) return;
+      // find columns — look for date, hours, description in first row or assume A=date, B=hours, C=desc
+      const header = rows[0].map(h => String(h||'').toLowerCase());
+      let dateCol=0, hoursCol=1, descCol=2;
+      header.forEach((h,i) => {
+        if (h.includes('תאריך')||h.includes('date')) dateCol=i;
+        if (h.includes('שעות')||h.includes('hour')||h.includes('time')) hoursCol=i;
+        if (h.includes('תיאור')||h.includes('desc')||h.includes('פירוט')||h.includes('הערות')) descCol=i;
+      });
+      const dataRows = rows.slice(1).filter(r => r[dateCol]||r[hoursCol]);
+      const logs = dataRows.map(r => {
+        const rawDate = r[dateCol]||'';
+        const rawHours = parseFloat(String(r[hoursCol]||'0').replace(',','.')) || 0;
+        const desc = r[descCol] || '';
+        // parse date DD.MM.YYYY or DD/MM/YYYY or Date object
+        let dateStr = '';
+        if (rawDate) {
+          const s = String(rawDate);
+          const m = s.match(/(\d{1,2})[./](\d{1,2})[./](\d{2,4})/);
+          if (m) {
+            const y = m[3].length===2 ? '20'+m[3] : m[3];
+            dateStr = `${y}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}T12:00:00.000Z`;
+          } else if (s.match(/^\d{4}-\d{2}-\d{2}/)) {
+            dateStr = s.substring(0,10)+'T12:00:00.000Z';
+          }
+        }
+        return { dateStr, rawHours, desc, secs: Math.round(rawHours * 3600) };
+      }).filter(r => r.secs > 0 && r.dateStr);
+      if (logs.length > 0) importData.push({ clientName: sheetName, logs });
+    });
+    if (!importData.length) { showImportStatus('לא נמצאו נתונים בקובץ', 'err'); return; }
+    showImportPreview();
+  } catch(e) { showImportStatus('שגיאה בקריאת הקובץ: ' + e.message, 'err'); }
+}
+
+function showImportPreview() {
+  const el = document.getElementById('import-preview-content');
+  let html = '';
+  importData.forEach(({clientName, logs}) => {
+    const totalHrs = logs.reduce((a,l)=>a+l.secs,0)/3600;
+    html += `<div style="margin-bottom:12px;">
+      <div style="font-weight:600;margin-bottom:4px;">${clientName} <span style="font-size:12px;color:var(--text2);">(${logs.length} רישומים | ${totalHrs.toFixed(1)}h)</span></div>
+      <div style="font-size:12px;color:var(--text2);">`;
+    logs.slice(0,3).forEach(l => {
+      html += `<div>${new Date(l.dateStr).toLocaleDateString('he-IL')} — ${(l.secs/3600).toFixed(2)}h${l.desc?' — '+l.desc:''}</div>`;
+    });
+    if (logs.length > 3) html += `<div>...ועוד ${logs.length-3} רישומים</div>`;
+    html += `</div></div>`;
+  });
+  el.innerHTML = html;
+  document.getElementById('import-preview').style.display = 'block';
+  document.getElementById('import-status').style.display = 'none';
+}
+
+async function confirmImport() {
+  if (!importData) return;
+  showImportStatus('מייבא נתונים...', 'loading');
+  document.getElementById('import-preview').style.display = 'none';
+  let addedClients = 0, addedLogs = 0;
+  for (const {clientName, logs} of importData) {
+    // find or create client
+    let client = state.clients.find(c => c.name === clientName);
+    if (!client) {
+      client = { id: uid(), name: clientName, rate: 0, type: 'hourly', fixedAmount: 0, monthlyHours: 0, color: '#4f8ef7' };
+      state.clients.push(client);
+      addedClients++;
+    }
+    for (const l of logs) {
+      const log = { id: uid(), cid: client.id, secs: l.secs, date: l.dateStr, desc: l.desc };
+      state.logs.push(log);
+      addedLogs++;
+    }
+  }
+  setSyncStatus('loading', 'שומר...');
+  try {
+    await saveClients();
+    await saveLogs();
+    setSyncStatus('ok', 'מסונכרן');
+    showImportStatus(`✓ יובאו ${addedClients} לקוחות ו-${addedLogs} רישומים בהצלחה`, 'ok');
+    render();
+  } catch(e) {
+    setSyncStatus('err', 'שגיאה');
+    showImportStatus('שגיאה בשמירה: ' + e.message, 'err');
+  }
+  importData = null;
+  document.getElementById('excel-file').value = '';
+}
+
+function cancelImport() {
+  importData = null;
+  document.getElementById('import-preview').style.display = 'none';
+  document.getElementById('import-status').style.display = 'none';
+  document.getElementById('excel-file').value = '';
+}
+
+function showImportStatus(msg, type) {
+  const el = document.getElementById('import-status');
+  el.style.display = 'block';
+  el.style.color = type==='err' ? 'var(--warn)' : type==='ok' ? 'var(--accent2)' : 'var(--accent)';
+  el.textContent = msg;
+}
+
+// ══════════════════════════ INIT
+loadAll();
+</script>
+</body>
+</html>
