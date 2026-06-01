@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>האופרטיבית — מעקב שעות</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⏱</text></svg>">
 <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -163,6 +164,7 @@ select option { background: var(--bg2); }
     <div class="nav-item active" onclick="showPage('tracker')"><span class="nav-icon">⏱</span> מעקב זמן</div>
     <div class="nav-item" onclick="showPage('report-all')"><span class="nav-icon">📊</span> דוח כולל</div>
     <div class="nav-item" onclick="showPage('report-client')"><span class="nav-icon">👤</span> דוח לקוח</div>
+    <div class="nav-item" onclick="showPage('report-internal')"><span class="nav-icon">🔍</span> דוח פנימי</div>
     <div class="nav-item" onclick="showPage('leads')"><span class="nav-icon">🎯</span> לידים</div>
     <div class="nav-item" onclick="showPage('settings')"><span class="nav-icon">⚙</span> הגדרות</div>
     <div style="flex:1"></div>
@@ -209,6 +211,19 @@ select option { background: var(--bg2); }
       <div id="rc-content"></div>
     </div>
 
+    <!-- REPORT INTERNAL -->
+    <div id="page-report-internal" class="page">
+      <div class="page-title">דוח פנימי מפורט</div>
+      <div class="page-sub">כל מקטע עבודה בנפרד — לשימוש אישי בלבד</div>
+      <div class="filter-bar no-print">
+        <div class="form-group"><label>לקוח</label><select id="ri-client" style="width:150px"><option value="">כל הלקוחות</option></select></div>
+        <div class="form-group"><label>מתאריך</label><input type="date" id="ri-from" style="width:140px"></div>
+        <div class="form-group"><label>עד תאריך</label><input type="date" id="ri-to" style="width:140px"></div>
+        <button class="btn btn-primary" onclick="renderReportInternal()">הצג דוח</button>
+      </div>
+      <div id="ri-content"></div>
+    </div>
+
     <!-- LEADS -->
     <div id="page-leads" class="page">
       <div class="page-title">לידים</div>
@@ -251,6 +266,21 @@ select option { background: var(--bg2); }
       </div>
       <div class="card-title" style="margin-bottom:10px;">לקוחות קיימים</div>
       <div id="client-list"></div>
+
+      <div class="card" style="margin-top:20px;">
+        <div class="card-title">תוספות חודשיות — לקוחות קבועים</div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:14px;">לחודשים שבהם עבדת מעבר לסכום הקבוע</div>
+        <div class="grid-2">
+          <div class="form-group"><label>לקוח</label><select id="bonus-client" style="width:100%;"></select></div>
+          <div class="form-group"><label>חודש</label><input type="month" id="bonus-month"></div>
+        </div>
+        <div class="grid-2">
+          <div class="form-group"><label>סכום תוספת (₪)</label><input type="number" id="bonus-amount" placeholder="500"></div>
+          <div class="form-group"><label>הערה</label><input type="text" id="bonus-note" placeholder="שעות נוספות לבקשתם"></div>
+        </div>
+        <button class="btn btn-primary" onclick="addBonus()">+ הוסף תוספת</button>
+        <div id="bonus-list" style="margin-top:14px;"></div>
+      </div>
 
       <div class="card" style="margin-top:20px;">
         <div class="card-title">ייבוא מקובץ Excel</div>
@@ -367,6 +397,7 @@ async function loadAll() {
     state.leads = ldr.filter(r => r[0] && r[0] !== 'id').map(r => ({
       id: r[0], name: r[1]||'', status: r[2]||'new', field: r[3]||'', date: r[4]||'', notes: r[5]||''
     }));
+    await loadBonuses();
     setSyncStatus('ok', 'מסונכרן');
     render();
   } catch(e) { setSyncStatus('err', 'שגיאה בטעינה'); }
@@ -407,6 +438,7 @@ function showPage(p) {
   document.querySelector(`[onclick="showPage('${p}')"]`).classList.add('active');
   if (p === 'report-all') renderReportAll();
   if (p === 'report-client') { populateClientSelect(); renderReportClient(); }
+  if (p === 'report-internal') { populateInternalClientSelect(); renderReportInternal(); }
 }
 function fmt(s) { const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = s%60; return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}` : `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; }
 function secsToHrsLabel(s) { const h = Math.floor(s/3600), m = Math.round((s%3600)/60); return m > 0 ? `${h}:${String(m).padStart(2,'0')}h` : `${h}h`; }
@@ -418,7 +450,7 @@ function getWeekKey(dt) { const d = new Date(Date.UTC(dt.getFullYear(),dt.getMon
 function weekLabel(dt) { const d = new Date(dt); const day = d.getDay()||7; const mon = new Date(d); mon.setDate(d.getDate()-day+1); const sun = new Date(mon); sun.setDate(mon.getDate()+6); return `${mon.toLocaleDateString('he-IL',{day:'numeric',month:'numeric'})} — ${sun.toLocaleDateString('he-IL',{day:'numeric',month:'numeric'})}`; }
 function uid() { return 'i' + Date.now() + Math.random().toString(36).substr(2,5); }
 
-function render() { renderClients(); renderClientList(); renderLeads(); initDates(); }
+function render() { renderClients(); renderClientList(); renderLeads(); renderBonusList(); populateBonusClientSelect(); populateInternalClientSelect(); populateClientSelect(); initDates(); }
 
 // ══════════════════════════ TRACKER
 function renderClients() {
@@ -573,9 +605,13 @@ function buildAllData() {
     let totalNet = 0;
     const rows = state.clients.map(c => {
       const secs = mLogs.filter(l => l.cid === c.id).reduce((a,l) => a+l.secs, 0);
-      const hrs = secs/3600; const earn = c.type==='fixed' ? c.fixedAmount : Math.round(hrs*c.rate);
+      const hrs = secs/3600;
+      const baseEarn = c.type==='fixed' ? c.fixedAmount : Math.round(hrs*c.rate);
+      // add bonuses for this period
+      const bonusEarn = (state.bonuses||[]).filter(b => b.cid===c.id && mLogs.some(l=>monthKey(l.date)===b.month||fromVal.substring(0,7)===b.month)).reduce((a,b)=>a+b.amount,0);
+      const earn = baseEarn + bonusEarn;
       totalNet += earn;
-      return { name:c.name, type:c.type, monthlyHours:c.monthlyHours, fixedAmount:c.fixedAmount, rate:c.rate, hrs, earn, secs };
+      return { name:c.name, type:c.type, monthlyHours:c.monthlyHours, fixedAmount:c.fixedAmount, rate:c.rate, hrs, earn, baseEarn, bonusEarn, secs };
     }).filter(r => r.secs > 0 || r.type === 'fixed');
     return { rows, totalNet };
   };
@@ -606,7 +642,7 @@ function renderReportAll() {
     const vat = Math.round(totalNet*VAT);
     let h = `<div style="font-size:15px;font-weight:600;margin:16px 0 8px;color:var(--accent);">${label}</div>`;
     h += `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>לקוח</th><th>סוג</th><th>שעות מוסכמות</th><th>סכום קבוע</th><th>שעות בפועל</th><th>סכום לתשלום</th></tr></thead><tbody>`;
-    rows.forEach(r => { h += `<tr><td>${r.name}</td><td><span class="badge ${r.type==='fixed'?'badge-f':'badge-h'}">${r.type==='fixed'?'קבוע':'שעות'}</span></td><td>${r.monthlyHours||'—'}</td><td>${r.type==='fixed'?'₪'+r.fixedAmount.toLocaleString():'—'}</td><td>${r.hrs.toFixed(2)}h</td><td><strong>₪${r.earn.toLocaleString()}</strong></td></tr>`; });
+    rows.forEach(r => { h += `<tr><td>${r.name}</td><td><span class="badge ${r.type==='fixed'?'badge-f':'badge-h'}">${r.type==='fixed'?'קבוע':'שעות'}</span></td><td>${r.monthlyHours||'—'}</td><td>${r.type==='fixed'?'₪'+r.fixedAmount.toLocaleString():'—'}</td><td>${r.hrs.toFixed(2)}h</td><td><strong>₪${r.earn.toLocaleString()}</strong>${r.bonusEarn>0?`<div style="font-size:11px;color:var(--accent2);">כולל תוספת ₪${r.bonusEarn.toLocaleString()}</div>`:''}${r.bonusEarn>0?`<div style="font-size:11px;color:var(--accent2);">כולל תוספת ₪${r.bonusEarn.toLocaleString()}</div>`:''}</td></tr>`; });
     h += `<tr class="total-row"><td colspan="4">סה"כ</td><td></td><td>ללא מע"מ: ₪${totalNet.toLocaleString()} | מע"מ: ₪${vat.toLocaleString()} | כולל מע"מ: ₪${(totalNet+vat).toLocaleString()}</td></tr></tbody></table></div>`;
     return h;
   };
@@ -742,6 +778,129 @@ async function addLead() {
   renderLeads(); ['l-name','l-field','l-date','l-notes'].forEach(id=>document.getElementById(id).value='');
 }
 async function deleteLead(i) { state.leads.splice(i,1); setSyncStatus('loading','שומר...'); try{await saveLeads();setSyncStatus('ok','מסונכרן');}catch(e){setSyncStatus('err','שגיאה');} renderLeads(); }
+
+// ══════════════════════════ INTERNAL REPORT
+function renderReportInternal() {
+  const cid = document.getElementById('ri-client').value;
+  const fromVal = document.getElementById('ri-from').value;
+  const toVal = document.getElementById('ri-to').value;
+  if (!fromVal || !toVal) return;
+  const from = new Date(fromVal), to = new Date(toVal); to.setHours(23,59,59);
+  let logs = state.logs.filter(l => inRange(l.date, from, to));
+  if (cid) logs = logs.filter(l => l.cid === cid);
+  if (!logs.length) { document.getElementById('ri-content').innerHTML = '<div style="color:var(--text2);font-size:13px;">אין נתונים לתקופה זו</div>'; return; }
+
+  // group by date then client
+  const byDay = {};
+  logs.forEach(l => {
+    const day = new Date(l.date).toISOString().split('T')[0];
+    if (!byDay[day]) byDay[day] = [];
+    byDay[day].push(l);
+  });
+
+  // detect duplicates — same cid, same secs, same day
+  const dupIds = new Set();
+  Object.values(byDay).forEach(dayLogs => {
+    const seen = {};
+    dayLogs.forEach(l => {
+      const key = `${l.cid}-${l.secs}`;
+      if (seen[key]) { dupIds.add(l.id); dupIds.add(seen[key]); }
+      else seen[key] = l.id;
+    });
+  });
+
+  let html = '';
+  if (dupIds.size > 0) {
+    html += `<div class="status-bar err" style="margin-bottom:16px;">⚠ נמצאו ${dupIds.size} רישומים חשודים ככפילויות — מסומנים באדום</div>`;
+  }
+
+  Object.entries(byDay).sort().forEach(([day, dayLogs]) => {
+    const dt = new Date(day);
+    const dayLabel = dt.toLocaleDateString('he-IL', {weekday:'long', day:'numeric', month:'long'});
+    const dayTotal = dayLogs.reduce((a,l) => a+l.secs, 0);
+    html += `<div style="font-size:13px;font-weight:600;color:var(--accent);margin:14px 0 6px;">${dayLabel} — סה"כ: ${secsToHrsLabel(dayTotal)}</div>`;
+    html += `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>לקוח</th><th>משך</th><th>תיאור</th><th></th></tr></thead><tbody>`;
+    dayLogs.forEach(l => {
+      const c = state.clients.find(x => x.id === l.cid);
+      const isDup = dupIds.has(l.id);
+      html += `<tr style="${isDup?'background:rgba(247,107,79,.1);':''}">
+        <td>${c ? c.name : '?'}</td>
+        <td style="white-space:nowrap;${isDup?'color:var(--warn);font-weight:600;':''}">${secsToHrsLabel(l.secs)}${isDup?' ⚠':''}</td>
+        <td style="color:var(--text2);">${l.desc||'—'}</td>
+        <td><button class="btn" onclick="openEditLog('${l.id}')" style="font-size:11px;padding:3px 8px;">✏</button></td>
+      </tr>`;
+    });
+    html += `</tbody></table></div>`;
+  });
+
+  const totalSecs = logs.reduce((a,l) => a+l.secs, 0);
+  html += `<div class="card" style="margin-top:16px;"><div style="font-size:13px;display:flex;gap:24px;flex-wrap:wrap;">
+    <span>סה"כ מקטעים: <strong>${logs.length}</strong></span>
+    <span>סה"כ שעות: <strong>${(totalSecs/3600).toFixed(2)}h</strong></span>
+    ${dupIds.size>0?`<span style="color:var(--warn);">חשודים ככפילויות: <strong>${dupIds.size}</strong></span>`:'<span style="color:var(--accent2);">✓ לא נמצאו כפילויות</span>'}
+  </div></div>`;
+  document.getElementById('ri-content').innerHTML = html;
+}
+
+function populateInternalClientSelect() {
+  const sel = document.getElementById('ri-client');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">כל הלקוחות</option>' + state.clients.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+}
+
+// ══════════════════════════ BONUSES
+async function loadBonuses() {
+  try {
+    const rows = await readSheet('Bonuses');
+    state.bonuses = rows.filter(r => r[0] && r[0] !== 'id').map(r => ({
+      id: r[0], cid: r[1]||'', month: r[2]||'', amount: parseFloat(r[3])||0, note: r[4]||''
+    }));
+  } catch(e) { state.bonuses = []; }
+}
+
+async function saveBonuses() {
+  const rows = [['id','cid','month','amount','note'],
+    ...state.bonuses.map(b => [b.id, b.cid, b.month, b.amount, b.note])];
+  await writeSheet('Bonuses', rows);
+}
+
+async function addBonus() {
+  const cid = document.getElementById('bonus-client').value;
+  const month = document.getElementById('bonus-month').value;
+  const amount = parseFloat(document.getElementById('bonus-amount').value);
+  if (!cid || !month || !amount) return;
+  const bonus = { id: uid(), cid, month, amount, note: document.getElementById('bonus-note').value||'' };
+  state.bonuses.push(bonus);
+  setSyncStatus('loading', 'שומר...');
+  try { await saveBonuses(); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה'); }
+  renderBonusList();
+  document.getElementById('bonus-amount').value = '';
+  document.getElementById('bonus-note').value = '';
+}
+
+async function deleteBonus(i) {
+  state.bonuses.splice(i, 1);
+  setSyncStatus('loading', 'שומר...');
+  try { await saveBonuses(); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה'); }
+  renderBonusList();
+}
+
+function renderBonusList() {
+  const el = document.getElementById('bonus-list'); if (!el) return;
+  if (!state.bonuses || !state.bonuses.length) { el.innerHTML = '<div style="color:var(--text2);font-size:13px;">אין תוספות עדיין</div>'; return; }
+  el.innerHTML = state.bonuses.map((b, i) => {
+    const c = state.clients.find(x => x.id === b.cid);
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:0.5px solid var(--border);font-size:13px;">
+      <div><strong>${c ? c.name : '?'}</strong> — ${b.month} — <span style="color:var(--accent2);">+₪${b.amount.toLocaleString()}</span>${b.note?' — '+b.note:''}</div>
+      <button class="btn btn-danger" onclick="deleteBonus(${i})" style="font-size:12px;">🗑</button>
+    </div>`;
+  }).join('');
+}
+
+function populateBonusClientSelect() {
+  const sel = document.getElementById('bonus-client'); if (!sel) return;
+  sel.innerHTML = state.clients.filter(c => c.type === 'fixed').map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+}
 
 // ══════════════════════════ EXCEL IMPORT
 let importData = null;
