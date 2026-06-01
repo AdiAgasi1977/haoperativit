@@ -222,6 +222,23 @@ select option { background: var(--bg2); }
         <button class="btn btn-primary" onclick="renderReportInternal()">הצג דוח</button>
       </div>
       <div id="ri-content"></div>
+
+      <div style="margin-top:28px;border-top:1px solid var(--border);padding-top:20px;">
+        <div class="page-title" style="font-size:16px;margin-bottom:4px;">תוספות חודשיות</div>
+        <div class="page-sub" style="margin-bottom:14px;">לחודשים שבהם עבדת מעבר לסכום הקבוע</div>
+        <div class="card">
+          <div class="grid-2">
+            <div class="form-group"><label>לקוח קבוע</label><select id="bonus-client"></select></div>
+            <div class="form-group"><label>חודש</label><input type="month" id="bonus-month"></div>
+          </div>
+          <div class="grid-2">
+            <div class="form-group"><label>סכום תוספת (₪)</label><input type="number" id="bonus-amount" placeholder="500"></div>
+            <div class="form-group"><label>הערה</label><input type="text" id="bonus-note" placeholder="שעות נוספות לבקשתם"></div>
+          </div>
+          <button class="btn btn-primary" onclick="addBonus()">+ הוסף תוספת</button>
+          <div id="bonus-list" style="margin-top:14px;"></div>
+        </div>
+      </div>
     </div>
 
     <!-- LEADS -->
@@ -268,21 +285,6 @@ select option { background: var(--bg2); }
       <div id="client-list"></div>
 
       <div class="card" style="margin-top:20px;">
-        <div class="card-title">תוספות חודשיות — לקוחות קבועים</div>
-        <div style="font-size:13px;color:var(--text2);margin-bottom:14px;">לחודשים שבהם עבדת מעבר לסכום הקבוע</div>
-        <div class="grid-2">
-          <div class="form-group"><label>לקוח</label><select id="bonus-client" style="width:100%;"></select></div>
-          <div class="form-group"><label>חודש</label><input type="month" id="bonus-month"></div>
-        </div>
-        <div class="grid-2">
-          <div class="form-group"><label>סכום תוספת (₪)</label><input type="number" id="bonus-amount" placeholder="500"></div>
-          <div class="form-group"><label>הערה</label><input type="text" id="bonus-note" placeholder="שעות נוספות לבקשתם"></div>
-        </div>
-        <button class="btn btn-primary" onclick="addBonus()">+ הוסף תוספת</button>
-        <div id="bonus-list" style="margin-top:14px;"></div>
-      </div>
-
-      <div class="card" style="margin-top:20px;">
         <div class="card-title">ייבוא מקובץ Excel</div>
         <div style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.7;">
           כל טאב בקובץ = לקוח. עמודות נדרשות: תאריך, שעות, תיאור.<br>
@@ -321,10 +323,20 @@ select option { background: var(--bg2); }
 
 <!-- EDIT LOG MODAL -->
 <div id="editlog-modal" class="modal-overlay">
-  <div class="modal-box">
+  <div class="modal-box" style="width:360px;">
     <div class="modal-title"><span>עריכת רישום</span><button class="btn" onclick="closeEditLog()" style="border:none;padding:2px;font-size:16px;">✕</button></div>
-    <div class="form-group" style="margin-bottom:10px;"><label>תיאור עבודה</label><input type="text" id="editlog-desc" placeholder="עבדתי על..." onkeydown="if(event.key==='Enter')saveEditLog()"></div>
-    <div class="form-group" style="margin-bottom:16px;"><label>תאריך</label><input type="date" id="editlog-date"></div>
+    <div style="background:var(--bg3);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;">
+      <span style="color:var(--text2);">משך נוכחי: </span><strong id="editlog-current-duration">—</strong>
+    </div>
+    <div class="form-group" style="margin-bottom:10px;"><label>תאריך</label><input type="date" id="editlog-date"></div>
+    <div class="grid-2" style="margin-bottom:10px;">
+      <div class="form-group"><label>שעת התחלה</label><input type="time" id="editlog-start" oninput="recalcDuration()"></div>
+      <div class="form-group"><label>שעת סיום</label><input type="time" id="editlog-end" oninput="recalcDuration()"></div>
+    </div>
+    <div style="background:var(--bg3);border-radius:8px;padding:8px 14px;margin-bottom:14px;font-size:13px;display:flex;align-items:center;gap:8px;">
+      <span style="color:var(--text2);">משך מחושב: </span><strong id="editlog-new-duration" style="color:var(--accent2);">—</strong>
+    </div>
+    <div class="form-group" style="margin-bottom:16px;"><label>תיאור עבודה</label><input type="text" id="editlog-desc" placeholder="עבדתי על..." onkeydown="if(event.key==='Enter')saveEditLog()"></div>
     <button class="btn btn-success" onclick="saveEditLog()" style="width:100%;justify-content:center;">שמור שינויים</button>
   </div>
 </div>
@@ -547,22 +559,62 @@ function openEditLog(logId) {
   const log = state.logs.find(l => l.id === logId); if (!log) return;
   editLogId = logId;
   document.getElementById('editlog-desc').value = log.desc || '';
-  document.getElementById('editlog-date').value = log.date ? new Date(log.date).toISOString().split('T')[0] : '';
+  const dt = log.date ? new Date(log.date) : new Date();
+  document.getElementById('editlog-date').value = dt.toISOString().split('T')[0];
+  // show current duration
+  document.getElementById('editlog-current-duration').textContent = secsToHrsLabel(log.secs);
+  // set default start/end based on stored time
+  const startH = String(dt.getHours()).padStart(2,'0');
+  const startM = String(dt.getMinutes()).padStart(2,'0');
+  document.getElementById('editlog-start').value = `${startH}:${startM}`;
+  // calculate end from secs
+  const endDt = new Date(dt.getTime() + log.secs * 1000);
+  document.getElementById('editlog-end').value = `${String(endDt.getHours()).padStart(2,'0')}:${String(endDt.getMinutes()).padStart(2,'0')}`;
+  document.getElementById('editlog-new-duration').textContent = secsToHrsLabel(log.secs);
   document.getElementById('editlog-modal').classList.add('open');
-  setTimeout(() => document.getElementById('editlog-desc').focus(), 100);
+  setTimeout(() => document.getElementById('editlog-start').focus(), 100);
 }
+
+function recalcDuration() {
+  const start = document.getElementById('editlog-start').value;
+  const end = document.getElementById('editlog-end').value;
+  if (!start || !end) return;
+  const [sh,sm] = start.split(':').map(Number);
+  const [eh,em] = end.split(':').map(Number);
+  let secs = (eh*3600+em*60) - (sh*3600+sm*60);
+  if (secs < 0) secs += 86400; // overnight
+  const el = document.getElementById('editlog-new-duration');
+  el.textContent = secs > 0 ? secsToHrsLabel(secs) : '—';
+  el.style.color = secs > 0 ? 'var(--accent2)' : 'var(--warn)';
+}
+
 function closeEditLog() { editLogId = null; document.getElementById('editlog-modal').classList.remove('open'); }
+
 async function saveEditLog() {
   const log = state.logs.find(l => l.id === editLogId); if (!log) return;
   log.desc = document.getElementById('editlog-desc').value.trim();
   const dateVal = document.getElementById('editlog-date').value;
-  if (dateVal) log.date = new Date(dateVal + 'T12:00:00').toISOString();
+  const start = document.getElementById('editlog-start').value;
+  const end = document.getElementById('editlog-end').value;
+  if (start && end) {
+    const [sh,sm] = start.split(':').map(Number);
+    const [eh,em] = end.split(':').map(Number);
+    let secs = (eh*3600+em*60) - (sh*3600+sm*60);
+    if (secs < 0) secs += 86400;
+    if (secs > 0) log.secs = secs;
+  }
+  if (dateVal && start) {
+    log.date = new Date(`${dateVal}T${start}:00`).toISOString();
+  } else if (dateVal) {
+    log.date = new Date(dateVal + 'T12:00:00').toISOString();
+  }
   setSyncStatus('loading', 'שומר...');
   try { await saveLogs(); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה'); }
   closeEditLog();
-  // re-render if report is open
   const rcp = document.getElementById('page-report-client');
   if (rcp && rcp.classList.contains('active')) renderReportClient();
+  const rip = document.getElementById('page-report-internal');
+  if (rip && rip.classList.contains('active')) renderReportInternal();
 }
 
 // ══════════════════════════ MANUAL TIME
@@ -642,7 +694,7 @@ function renderReportAll() {
     const vat = Math.round(totalNet*VAT);
     let h = `<div style="font-size:15px;font-weight:600;margin:16px 0 8px;color:var(--accent);">${label}</div>`;
     h += `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>לקוח</th><th>סוג</th><th>שעות מוסכמות</th><th>סכום קבוע</th><th>שעות בפועל</th><th>סכום לתשלום</th></tr></thead><tbody>`;
-    rows.forEach(r => { h += `<tr><td>${r.name}</td><td><span class="badge ${r.type==='fixed'?'badge-f':'badge-h'}">${r.type==='fixed'?'קבוע':'שעות'}</span></td><td>${r.monthlyHours||'—'}</td><td>${r.type==='fixed'?'₪'+r.fixedAmount.toLocaleString():'—'}</td><td>${r.hrs.toFixed(2)}h</td><td><strong>₪${r.earn.toLocaleString()}</strong>${r.bonusEarn>0?`<div style="font-size:11px;color:var(--accent2);">כולל תוספת ₪${r.bonusEarn.toLocaleString()}</div>`:''}${r.bonusEarn>0?`<div style="font-size:11px;color:var(--accent2);">כולל תוספת ₪${r.bonusEarn.toLocaleString()}</div>`:''}</td></tr>`; });
+    rows.forEach(r => { h += `<tr><td>${r.name}</td><td><span class="badge ${r.type==='fixed'?'badge-f':'badge-h'}">${r.type==='fixed'?'קבוע':'שעות'}</span></td><td>${r.monthlyHours||'—'}</td><td>${r.type==='fixed'?'₪'+r.fixedAmount.toLocaleString():'—'}</td><td>${r.hrs.toFixed(2)}h</td><td><strong>₪${r.earn.toLocaleString()}</strong>${r.bonusEarn>0?`<div style="font-size:11px;color:var(--accent2);">כולל תוספת ₪${r.bonusEarn.toLocaleString()}</div>`:''}</td></tr>`; });
     h += `<tr class="total-row"><td colspan="4">סה"כ</td><td></td><td>ללא מע"מ: ₪${totalNet.toLocaleString()} | מע"מ: ₪${vat.toLocaleString()} | כולל מע"מ: ₪${(totalNet+vat).toLocaleString()}</td></tr></tbody></table></div>`;
     return h;
   };
@@ -819,16 +871,17 @@ function renderReportInternal() {
     const dayLabel = dt.toLocaleDateString('he-IL', {weekday:'long', day:'numeric', month:'long'});
     const dayTotal = dayLogs.reduce((a,l) => a+l.secs, 0);
     html += `<div style="font-size:13px;font-weight:600;color:var(--accent);margin:14px 0 6px;">${dayLabel} — סה"כ: ${secsToHrsLabel(dayTotal)}</div>`;
-    html += `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>לקוח</th><th>משך</th><th>תיאור</th><th></th></tr></thead><tbody>`;
+    html += `<div class="tbl-wrap"><table class="tbl" style="table-layout:fixed;width:100%;"><thead><tr><th style="width:120px;">לקוח</th><th style="width:70px;">משך</th><th>תיאור</th><th style="width:40px;"></th></tr></thead><tbody>`;
     dayLogs.forEach(l => {
       const c = state.clients.find(x => x.id === l.cid);
       const isDup = dupIds.has(l.id);
       html += `<tr style="${isDup?'background:rgba(247,107,79,.1);':''}">
-        <td>${c ? c.name : '?'}</td>
+        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${c ? c.name : '?'}</td>
         <td style="white-space:nowrap;${isDup?'color:var(--warn);font-weight:600;':''}">${secsToHrsLabel(l.secs)}${isDup?' ⚠':''}</td>
-        <td style="color:var(--text2);">${l.desc||'—'}</td>
+        <td style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${l.desc||'—'}</td>
         <td><button class="btn" onclick="openEditLog('${l.id}')" style="font-size:11px;padding:3px 8px;">✏</button></td>
       </tr>`;
+    });
     });
     html += `</tbody></table></div>`;
   });
