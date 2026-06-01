@@ -372,14 +372,26 @@ function loadConfig() { return !!localStorage.getItem('haop_cfg_v2'); }
 // ══════════════════════════ APPS SCRIPT API
 async function asRequest(params) {
   const url = APPS_SCRIPT_URL + '?' + new URLSearchParams(params).toString();
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(r.status);
-  return r.json();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+  try {
+    const r = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!r.ok) throw new Error(r.status);
+    const text = await r.text();
+    try { return JSON.parse(text); } catch(e) { throw new Error('תגובה לא תקינה מהשרת'); }
+  } catch(e) {
+    clearTimeout(timeout);
+    if (e.name === 'AbortError') throw new Error('הבקשה לקחה יותר מדי זמן — נסי שוב');
+    throw e;
+  }
 }
 
 async function readSheet(sheetName) {
-  const data = await asRequest({ action: 'read', sheet: sheetName });
-  return data.data || [];
+  try {
+    const data = await asRequest({ action: 'read', sheet: sheetName });
+    return data.data || [];
+  } catch(e) { return []; }
 }
 
 async function writeSheet(sheetName, rows) {
@@ -394,11 +406,11 @@ async function appendToSheet(sheetName, row) {
 async function loadAll() {
   setSyncStatus('loading', 'טוען...');
   try {
-    const [cr, lr, ldr] = await Promise.all([
-      readSheet(SHEET_CLIENTS),
-      readSheet(SHEET_LOGS),
-      readSheet(SHEET_LEADS)
-    ]);
+    const cr = await readSheet(SHEET_CLIENTS);
+    const lr = await readSheet(SHEET_LOGS);
+    const ldr = await readSheet(SHEET_LEADS);
+    const br = await readSheet('Bonuses');
+
     state.clients = cr.filter(r => r[0] && r[0] !== 'id').map(r => ({
       id: r[0], name: r[1]||'', rate: parseFloat(r[2])||0, type: r[3]||'hourly',
       fixedAmount: parseFloat(r[4])||0, monthlyHours: parseFloat(r[5])||0, color: '#4f8ef7'
@@ -409,10 +421,15 @@ async function loadAll() {
     state.leads = ldr.filter(r => r[0] && r[0] !== 'id').map(r => ({
       id: r[0], name: r[1]||'', status: r[2]||'new', field: r[3]||'', date: r[4]||'', notes: r[5]||''
     }));
-    await loadBonuses();
+    state.bonuses = br.filter(r => r[0] && r[0] !== 'id').map(r => ({
+      id: r[0], cid: r[1]||'', month: r[2]||'', amount: parseFloat(r[3])||0, note: r[4]||''
+    }));
+
     setSyncStatus('ok', 'מסונכרן');
     render();
-  } catch(e) { setSyncStatus('err', 'שגיאה בטעינה'); }
+  } catch(e) {
+    setSyncStatus('err', 'שגיאה בטעינה: ' + e.message);
+  }
 }
 
 async function saveClients() {
@@ -902,14 +919,6 @@ function populateInternalClientSelect() {
 }
 
 // ══════════════════════════ BONUSES
-async function loadBonuses() {
-  try {
-    const rows = await readSheet('Bonuses');
-    state.bonuses = rows.filter(r => r[0] && r[0] !== 'id').map(r => ({
-      id: r[0], cid: r[1]||'', month: r[2]||'', amount: parseFloat(r[3])||0, note: r[4]||''
-    }));
-  } catch(e) { state.bonuses = []; }
-}
 
 async function saveBonuses() {
   const rows = [['id','cid','month','amount','note'],
