@@ -623,6 +623,8 @@ function fmtDate(dateStr) {
   const y = dt.getFullYear();
   return `${d}/${m}/${y}`;
 }
+
+function recalcDuration() {
   const start = document.getElementById('editlog-start').value;
   const end = document.getElementById('editlog-end').value;
   if (!start || !end) return;
