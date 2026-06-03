@@ -188,8 +188,8 @@ select option { background: var(--bg2); }
       <div class="page-title">דוח כולל</div>
       <div class="page-sub">סיכום שעות והכנסות לפי תקופה</div>
       <div class="filter-bar no-print">
-        <div class="form-group"><label>מתאריך</label><input type="date" id="ra-from" style="width:140px"></div>
-        <div class="form-group"><label>עד תאריך</label><input type="date" id="ra-to" style="width:140px"></div>
+        <div class="form-group"><label>מתאריך</label><div style="display:flex;gap:4px;"><input type="date" id="ra-from" style="width:130px"><button class="btn" onclick="document.getElementById('ra-from').showPicker()" style="padding:6px 8px;">📅</button></div></div>
+        <div class="form-group"><label>עד תאריך</label><div style="display:flex;gap:4px;"><input type="date" id="ra-to" style="width:130px"><button class="btn" onclick="document.getElementById('ra-to').showPicker()" style="padding:6px 8px;">📅</button></div></div>
         <button class="btn btn-primary" onclick="renderReportAll()">הצג דוח</button>
         <button class="btn btn-print" onclick="printReport('all')">🖨 הדפס / PDF</button>
       </div>
@@ -203,8 +203,8 @@ select option { background: var(--bg2); }
       <div class="filter-bar no-print">
         <div class="form-group"><label>לקוח</label><select id="rc-client" style="width:150px"></select></div>
         <div class="form-group"><label>סוג דוח</label><select id="rc-type" style="width:110px"><option value="monthly">חודשי</option><option value="weekly">שבועי</option></select></div>
-        <div class="form-group"><label>מתאריך</label><input type="date" id="rc-from" style="width:140px"></div>
-        <div class="form-group"><label>עד תאריך</label><input type="date" id="rc-to" style="width:140px"></div>
+        <div class="form-group"><label>מתאריך</label><div style="display:flex;gap:4px;"><input type="date" id="rc-from" style="width:130px"><button class="btn" onclick="document.getElementById('rc-from').showPicker()" style="padding:6px 8px;">📅</button></div></div>
+        <div class="form-group"><label>עד תאריך</label><div style="display:flex;gap:4px;"><input type="date" id="rc-to" style="width:130px"><button class="btn" onclick="document.getElementById('rc-to').showPicker()" style="padding:6px 8px;">📅</button></div></div>
         <button class="btn btn-primary" onclick="renderReportClient()">הצג דוח</button>
         <button class="btn btn-print" onclick="printReport('client')">🖨 הדפס / PDF</button>
       </div>
@@ -217,8 +217,8 @@ select option { background: var(--bg2); }
       <div class="page-sub">כל מקטע עבודה בנפרד — לשימוש אישי בלבד</div>
       <div class="filter-bar no-print">
         <div class="form-group"><label>לקוח</label><select id="ri-client" style="width:150px"><option value="">כל הלקוחות</option></select></div>
-        <div class="form-group"><label>מתאריך</label><input type="date" id="ri-from" style="width:140px"></div>
-        <div class="form-group"><label>עד תאריך</label><input type="date" id="ri-to" style="width:140px"></div>
+        <div class="form-group"><label>מתאריך</label><div style="display:flex;gap:4px;"><input type="date" id="ri-from" style="width:130px"><button class="btn" onclick="document.getElementById('ri-from').showPicker()" style="padding:6px 8px;">📅</button></div></div>
+        <div class="form-group"><label>עד תאריך</label><div style="display:flex;gap:4px;"><input type="date" id="ri-to" style="width:130px"><button class="btn" onclick="document.getElementById('ri-to').showPicker()" style="padding:6px 8px;">📅</button></div></div>
         <button class="btn btn-primary" onclick="renderReportInternal()">הצג דוח</button>
       </div>
       <div id="ri-content"></div>
@@ -328,7 +328,13 @@ select option { background: var(--bg2); }
     <div style="background:var(--bg3);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;">
       <span style="color:var(--text2);">משך נוכחי: </span><strong id="editlog-current-duration">—</strong>
     </div>
-    <div class="form-group" style="margin-bottom:10px;"><label>תאריך</label><input type="date" id="editlog-date"></div>
+    <div class="form-group" style="margin-bottom:10px;">
+      <label>תאריך</label>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <input type="date" id="editlog-date" style="flex:1;">
+        <button class="btn" onclick="document.getElementById('editlog-date').showPicker()" style="padding:6px 10px;" title="פתח לוח שנה">📅</button>
+      </div>
+    </div>
     <div class="grid-2" style="margin-bottom:10px;">
       <div class="form-group"><label>שעת התחלה</label><input type="time" id="editlog-start" oninput="recalcDuration()"></div>
       <div class="form-group"><label>שעת סיום</label><input type="time" id="editlog-end" oninput="recalcDuration()"></div>
@@ -337,7 +343,10 @@ select option { background: var(--bg2); }
       <span style="color:var(--text2);">משך מחושב: </span><strong id="editlog-new-duration" style="color:var(--accent2);">—</strong>
     </div>
     <div class="form-group" style="margin-bottom:16px;"><label>תיאור עבודה</label><input type="text" id="editlog-desc" placeholder="עבדתי על..." onkeydown="if(event.key==='Enter')saveEditLog()"></div>
-    <button class="btn btn-success" onclick="saveEditLog()" style="width:100%;justify-content:center;">שמור שינויים</button>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-success" onclick="saveEditLog()" style="flex:1;justify-content:center;">שמור שינויים</button>
+      <button class="btn btn-danger" onclick="deleteLog()" style="border:1px solid var(--warn);">🗑 מחק</button>
+    </div>
   </div>
 </div>
 
@@ -349,7 +358,7 @@ select option { background: var(--bg2); }
       <div class="form-group"><label>שעות</label><input id="m-hours" type="number" min="0" max="24" placeholder="0"></div>
       <div class="form-group"><label>דקות</label><input id="m-mins" type="number" min="0" max="59" placeholder="0"></div>
     </div>
-    <div class="form-group" style="margin-bottom:10px;"><label>תאריך</label><input id="m-date" type="date"></div>
+    <div class="form-group" style="margin-bottom:10px;"><label>תאריך</label><div style="display:flex;gap:4px;"><input id="m-date" type="date" style="flex:1;"><button class="btn" onclick="document.getElementById('m-date').showPicker()" style="padding:6px 8px;">📅</button></div></div>
     <div class="form-group" style="margin-bottom:16px;"><label>תיאור עבודה</label><input id="m-desc" type="text" placeholder="עבודה על..."></div>
     <button class="btn btn-success" onclick="saveManual()" style="width:100%;justify-content:center;">שמור</button>
   </div>
@@ -592,7 +601,28 @@ function openEditLog(logId) {
   setTimeout(() => document.getElementById('editlog-start').focus(), 100);
 }
 
-function recalcDuration() {
+async function deleteLog() {
+  if (!editLogId) return;
+  if (!confirm('למחוק רישום זה לצמיתות?')) return;
+  state.logs = state.logs.filter(l => l.id !== editLogId);
+  setSyncStatus('loading', 'שומר...');
+  try { await saveLogs(); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה'); }
+  closeEditLog();
+  renderClients();
+  const rip = document.getElementById('page-report-internal');
+  if (rip && rip.classList.contains('active')) renderReportInternal();
+  const rcp = document.getElementById('page-report-client');
+  if (rcp && rcp.classList.contains('active')) renderReportClient();
+}
+
+function fmtDate(dateStr) {
+  if (!dateStr) return '—';
+  const dt = new Date(dateStr);
+  const d = String(dt.getDate()).padStart(2,'0');
+  const m = String(dt.getMonth()+1).padStart(2,'0');
+  const y = dt.getFullYear();
+  return `${d}/${m}/${y}`;
+}
   const start = document.getElementById('editlog-start').value;
   const end = document.getElementById('editlog-end').value;
   if (!start || !end) return;
@@ -736,7 +766,7 @@ function renderReportClient() {
       // collect log ids for this day for editing (use first log of day)
       const dayLogs = state.logs.filter(l => l.cid === d.c.id && new Date(l.date).toISOString().split('T')[0] === day);
       const editBtns = dayLogs.map(l => `<button class="btn" onclick="openEditLog('${l.id}')" style="font-size:11px;padding:3px 8px;">✏</button>`).join('');
-      html+=`<tr><td>${dt.toLocaleDateString('he-IL',{weekday:'short',day:'numeric',month:'numeric'})}</td><td><strong>${secsToHrsLabel(data.secs)}</strong></td><td style="color:var(--text2);">${data.descs.length?data.descs.join(', '):'—'}</td><td style="white-space:nowrap;">${editBtns}</td></tr>`;
+      html+=`<tr><td>${fmtDate(day)} ${dt.toLocaleDateString('he-IL',{weekday:'short'})}</td><td><strong>${secsToHrsLabel(data.secs)}</strong></td><td style="color:var(--text2);">${data.descs.length?data.descs.join(', '):'—'}</td><td style="white-space:nowrap;">${editBtns}</td></tr>`;
     });
     html += `<tr class="total-row"><td>סה"כ</td><td>${secsToHrsLabel(grpSecs)}</td><td></td></tr></tbody></table></div>`;
   });
@@ -836,7 +866,7 @@ function renderLeads() {
   ll.innerHTML=state.leads.map((l,i)=>`
     <div class="lead-card">
       <div class="lead-header"><div class="lead-name">${l.name}</div><div style="display:flex;gap:6px;align-items:center;"><span class="badge badge-${l.status}">${sl[l.status]||l.status}</span><button class="btn btn-danger" onclick="deleteLead(${i})" style="font-size:12px;">🗑</button></div></div>
-      ${l.field?`<div style="font-size:12px;color:var(--text2);">${l.field}${l.date?' · '+new Date(l.date).toLocaleDateString('he-IL'):''}</div>`:''}
+      ${l.field?`<div style="font-size:12px;color:var(--text2);">${l.field}${l.date?' · '+fmtDate(l.date):''}</div>`:''}
       ${l.notes?`<div style="font-size:12px;color:var(--text2);">${l.notes}</div>`:''}
     </div>`).join('');
 }
@@ -885,7 +915,7 @@ function renderReportInternal() {
 
   Object.entries(byDay).sort().forEach(([day, dayLogs]) => {
     const dt = new Date(day);
-    const dayLabel = dt.toLocaleDateString('he-IL', {weekday:'long', day:'numeric', month:'long'});
+    const dayLabel = `${fmtDate(day)} ${dt.toLocaleDateString('he-IL', {weekday:'long'})}`;
     const dayTotal = dayLogs.reduce((a,l) => a+l.secs, 0);
     html += `<div style="font-size:13px;font-weight:600;color:var(--accent);margin:14px 0 6px;">${dayLabel} — סה"כ: ${secsToHrsLabel(dayTotal)}</div>`;
     html += `<div class="tbl-wrap"><table class="tbl" style="table-layout:fixed;width:100%;"><thead><tr><th style="width:120px;">לקוח</th><th style="width:70px;">משך</th><th>תיאור</th><th style="width:40px;"></th></tr></thead><tbody>`;
@@ -1021,7 +1051,7 @@ function showImportPreview() {
       <div style="font-weight:600;margin-bottom:4px;">${clientName} <span style="font-size:12px;color:var(--text2);">(${logs.length} רישומים | ${totalHrs.toFixed(1)}h)</span></div>
       <div style="font-size:12px;color:var(--text2);">`;
     logs.slice(0,3).forEach(l => {
-      html += `<div>${new Date(l.dateStr).toLocaleDateString('he-IL')} — ${(l.secs/3600).toFixed(2)}h${l.desc?' — '+l.desc:''}</div>`;
+      html += `<div>${fmtDate(l.dateStr)} — ${(l.secs/3600).toFixed(2)}h${l.desc?' — '+l.desc:''}</div>`;
     });
     if (logs.length > 3) html += `<div>...ועוד ${logs.length-3} רישומים</div>`;
     html += `</div></div>`;
