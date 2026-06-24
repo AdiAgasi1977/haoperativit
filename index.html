@@ -26,6 +26,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); dire
 input, select, textarea { font-family: var(--font); font-size: 13px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; width: 100%; outline: none; transition: border-color .2s; }
 input:focus, select:focus { border-color: var(--accent); }
 select option { background: var(--bg2); }
+/* Force date inputs to LTR so DD/MM/YYYY reads correctly */
+input[type="date"] { direction: ltr; text-align: right; }
 
 /* LAYOUT */
 .app-wrap { display: flex; min-height: 100vh; }
@@ -543,7 +545,7 @@ async function stopTimer(cid) {
   timers[cid].elapsed = timers[cid].baseElapsed + Math.floor((Date.now()-timers[cid].startTs)/1000);
   timers[cid].running = false;
   if (timers[cid].elapsed > 5) {
-    const log = { id: uid(), cid, secs: timers[cid].elapsed, date: new Date().toISOString(), desc: '' };
+    const log = { id: uid(), cid, secs: timers[cid].elapsed, date: nowIsrael(), desc: '' };
     state.logs.push(log);
     setSyncStatus('loading', 'שומר...');
     try { await appendLog(log); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה בשמירה'); }
@@ -604,15 +606,36 @@ function openEditLog(logId) {
 async function deleteLog() {
   if (!editLogId) return;
   if (!confirm('למחוק רישום זה לצמיתות?')) return;
-  state.logs = state.logs.filter(l => l.id !== editLogId);
-  setSyncStatus('loading', 'שומר...');
-  try { await saveLogs(); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה'); }
+  const idToDelete = editLogId;
   closeEditLog();
-  renderClients();
-  const rip = document.getElementById('page-report-internal');
-  if (rip && rip.classList.contains('active')) renderReportInternal();
-  const rcp = document.getElementById('page-report-client');
-  if (rcp && rcp.classList.contains('active')) renderReportClient();
+  state.logs = state.logs.filter(l => l.id !== idToDelete);
+  setSyncStatus('loading', 'מוחק...');
+  try {
+    await saveLogs();
+    setSyncStatus('ok', 'מסונכרן');
+    renderClients();
+    const rip = document.getElementById('page-report-internal');
+    if (rip && rip.classList.contains('active')) renderReportInternal();
+    const rcp = document.getElementById('page-report-client');
+    if (rcp && rcp.classList.contains('active')) renderReportClient();
+  } catch(e) {
+    setSyncStatus('err', 'שגיאה במחיקה — נסי שוב');
+    // restore log if save failed
+    await loadAll();
+  }
+}
+
+function nowIsrael() {
+  // Returns ISO string in Israel time (UTC+3 in summer, UTC+2 in winter)
+  const now = new Date();
+  const israelOffset = now.toLocaleString('en-US', {timeZone:'Asia/Jerusalem', hour12:false}).includes('PM') ? 0 : 0;
+  const israelTime = new Date(now.toLocaleString('en-US', {timeZone:'Asia/Jerusalem'}));
+  return israelTime.toISOString();
+}
+
+function dateToIsrael(dateStr) {
+  if (!dateStr) return new Date().toISOString();
+  return new Date(new Date(dateStr).toLocaleString('en-US', {timeZone:'Asia/Jerusalem'})).toISOString();
 }
 
 function fmtDate(dateStr) {
@@ -671,7 +694,9 @@ function openManual(i) {
   manualCIdx = i;
   document.getElementById('modal-title-text').textContent = state.clients[i].name + ' — הוספת זמן';
   document.getElementById('m-hours').value = ''; document.getElementById('m-mins').value = '';
-  document.getElementById('m-desc').value = ''; document.getElementById('m-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('m-desc').value = ''; 
+  const nowIL = new Date(new Date().toLocaleString('en-US', {timeZone:'Asia/Jerusalem'}));
+  document.getElementById('m-date').value = `${nowIL.getFullYear()}-${String(nowIL.getMonth()+1).padStart(2,'0')}-${String(nowIL.getDate()).padStart(2,'0')}`;
   document.getElementById('manual-modal').classList.add('open');
 }
 function closeModal() { document.getElementById('manual-modal').classList.remove('open'); }
@@ -681,7 +706,7 @@ async function saveManual() {
   const m = parseInt(document.getElementById('m-mins').value)||0;
   const secs = h*3600 + m*60; if (!secs) return;
   const dateVal = document.getElementById('m-date').value;
-  const log = { id: uid(), cid: c.id, secs, date: dateVal ? new Date(dateVal+'T12:00:00').toISOString() : new Date().toISOString(), desc: document.getElementById('m-desc').value||'ידני' };
+  const log = { id: uid(), cid: c.id, secs, date: dateVal ? new Date(dateVal+'T12:00:00').toLocaleString('en-US', {timeZone:'Asia/Jerusalem'}) : nowIsrael(), desc: document.getElementById('m-desc').value||'ידני' };
   state.logs.push(log);
   setSyncStatus('loading', 'שומר...');
   try { await appendLog(log); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה'); }
