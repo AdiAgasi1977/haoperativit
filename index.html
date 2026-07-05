@@ -381,12 +381,15 @@ function saveConfig() { localStorage.setItem('haop_cfg_v2', 'connected'); }
 function loadConfig() { return !!localStorage.getItem('haop_cfg_v2'); }
 
 // ══════════════════════════ APPS SCRIPT API
-async function asRequest(params) {
-  const url = APPS_SCRIPT_URL + '?' + new URLSearchParams(params).toString();
+async function asRequest(params, body) {
+  const url = APPS_SCRIPT_URL + '?' + new URLSearchParams({action: params.action, sheet: params.sheet}).toString();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+  const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const r = await fetch(url, { signal: controller.signal });
+    const options = body
+      ? { method: 'POST', signal: controller.signal, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) }
+      : { method: 'GET', signal: controller.signal };
+    const r = await fetch(url, options);
     clearTimeout(timeout);
     if (!r.ok) throw new Error(r.status);
     const text = await r.text();
@@ -400,17 +403,17 @@ async function asRequest(params) {
 
 async function readSheet(sheetName) {
   try {
-    const data = await asRequest({ action: 'read', sheet: sheetName });
+    const data = await asRequest({ action: 'read', sheet: sheetName }, null);
     return data.data || [];
   } catch(e) { return []; }
 }
 
 async function writeSheet(sheetName, rows) {
-  await asRequest({ action: 'write', sheet: sheetName, rows: JSON.stringify(rows) });
+  await asRequest({ action: 'write', sheet: sheetName }, { rows });
 }
 
 async function appendToSheet(sheetName, row) {
-  await asRequest({ action: 'append', sheet: sheetName, row: JSON.stringify(row) });
+  await asRequest({ action: 'append', sheet: sheetName }, { row });
 }
 
 // ══════════════════════════ LOAD ALL
