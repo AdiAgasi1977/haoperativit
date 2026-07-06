@@ -406,15 +406,8 @@ async function readSheet(sheetName) {
 }
 
 async function writeSheet(sheetName, rows) {
-  // Split into chunks to avoid URL length limits
-  const CHUNK = 50;
-  // First clear
-  await asRequest({ action: 'clear', sheet: sheetName });
-  // Then write header + chunks
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    const chunk = rows.slice(i, i + CHUNK);
-    await asRequest({ action: 'appendRows', sheet: sheetName, rows: JSON.stringify(chunk) });
-  }
+  // Safe write: clear and rewrite in single operation via Apps Script
+  await asRequest({ action: 'write', sheet: sheetName, rows: JSON.stringify(rows) });
 }
 
 async function appendToSheet(sheetName, row) {
