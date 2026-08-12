@@ -588,15 +588,14 @@ function openEditLog(logId) {
   const log = state.logs.find(l => l.id === logId); if (!log) return;
   editLogId = logId;
   document.getElementById('editlog-desc').value = log.desc || '';
-  const dt = log.date ? new Date(log.date) : new Date();
-  document.getElementById('editlog-date').value = dt.toISOString().split('T')[0];
-  // show current duration
+  // Convert to Israel time for display
+  const dt = log.date ? dateToIsraelDisplay(log.date) : new Date();
+  const dateStr = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  document.getElementById('editlog-date').value = dateStr;
   document.getElementById('editlog-current-duration').textContent = secsToHrsLabel(log.secs);
-  // set default start/end based on stored time
   const startH = String(dt.getHours()).padStart(2,'0');
   const startM = String(dt.getMinutes()).padStart(2,'0');
   document.getElementById('editlog-start').value = `${startH}:${startM}`;
-  // calculate end from secs
   const endDt = new Date(dt.getTime() + log.secs * 1000);
   document.getElementById('editlog-end').value = `${String(endDt.getHours()).padStart(2,'0')}:${String(endDt.getMinutes()).padStart(2,'0')}`;
   document.getElementById('editlog-new-duration').textContent = secsToHrsLabel(log.secs);
@@ -627,21 +626,21 @@ async function deleteLog() {
 }
 
 function nowIsrael() {
-  // Returns ISO string in Israel time (UTC+3 in summer, UTC+2 in winter)
   const now = new Date();
-  const israelOffset = now.toLocaleString('en-US', {timeZone:'Asia/Jerusalem', hour12:false}).includes('PM') ? 0 : 0;
-  const israelTime = new Date(now.toLocaleString('en-US', {timeZone:'Asia/Jerusalem'}));
-  return israelTime.toISOString();
+  const israelStr = now.toLocaleString('sv-SE', {timeZone:'Asia/Jerusalem'});
+  return new Date(israelStr).toISOString();
 }
 
-function dateToIsrael(dateStr) {
-  if (!dateStr) return new Date().toISOString();
-  return new Date(new Date(dateStr).toLocaleString('en-US', {timeZone:'Asia/Jerusalem'})).toISOString();
+function dateToIsraelDisplay(dateStr) {
+  if (!dateStr) return '';
+  const dt = new Date(dateStr);
+  const israelStr = dt.toLocaleString('sv-SE', {timeZone:'Asia/Jerusalem'});
+  return new Date(israelStr);
 }
 
 function fmtDate(dateStr) {
   if (!dateStr) return '—';
-  const dt = new Date(dateStr);
+  const dt = dateToIsraelDisplay(dateStr);
   const d = String(dt.getDate()).padStart(2,'0');
   const m = String(dt.getMonth()+1).padStart(2,'0');
   const y = dt.getFullYear();
@@ -677,9 +676,11 @@ async function saveEditLog() {
     if (secs > 0) log.secs = secs;
   }
   if (dateVal && start) {
-    log.date = new Date(`${dateVal}T${start}:00`).toISOString();
+    // Save as Israel time
+    const israelStr = `${dateVal}T${start}:00`;
+    log.date = new Date(new Date(israelStr).toLocaleString('sv-SE', {timeZone:'Asia/Jerusalem'})).toISOString();
   } else if (dateVal) {
-    log.date = new Date(dateVal + 'T12:00:00').toISOString();
+    log.date = new Date(`${dateVal}T12:00:00`).toLocaleString('sv-SE', {timeZone:'Asia/Jerusalem'});
   }
   setSyncStatus('loading', 'שומר...');
   try { await saveLogs(); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה'); }
