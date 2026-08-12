@@ -1140,6 +1140,17 @@ function showImportStatus(msg, type) {
 
 // ══════════════════════════ INIT
 loadAll();
+
+// Prevent full reload when returning to tab — just refresh sync status
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state.clients.length > 0) {
+    // Already have data — just check sync status quietly
+    setSyncStatus('ok', 'מסונכרן');
+  } else if (document.visibilityState === 'visible') {
+    // No data yet — load
+    loadAll();
+  }
+});
 </script>
 </body>
 </html>
