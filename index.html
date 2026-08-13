@@ -381,67 +381,119 @@ function saveConfig() { localStorage.setItem('haop_cfg_v2', 'connected'); }
 function loadConfig() { return !!localStorage.getItem('haop_cfg_v2'); }
 
 // ══════════════════════════ APPS SCRIPT API
-async function asRequest(params) {
+// dataLoaded is the safety latch: no write is allowed until a full, successful
+// load has happened. Without it, a failed read leaves state empty and the next
+// save wipes the sheet.
+let dataLoaded = false;
+
+async function asGet(params) {
   const url = APPS_SCRIPT_URL + '?' + new URLSearchParams(params).toString();
+  return doFetch(url, { method: 'GET', redirect: 'follow' });
+}
+
+async function asPost(payload) {
+  // text/plain keeps this a CORS "simple request" — no preflight, which Apps
+  // Script cannot answer. Body also has no length limit, unlike a query string.
+  return doFetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    redirect: 'follow',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(payload)
+  });
+}
+
+async function doFetch(url, options) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
+  const timeout = setTimeout(() => controller.abort(), 30000);
   try {
-    const r = await fetch(url, { signal: controller.signal, redirect: 'follow' });
+    const r = await fetch(url, Object.assign({ signal: controller.signal }, options));
     clearTimeout(timeout);
-    if (!r.ok) throw new Error(r.status);
+    if (!r.ok) throw new Error('השרת החזיר שגיאה ' + r.status);
     const text = await r.text();
-    try { return JSON.parse(text); } catch(e) { throw new Error('תגובה לא תקינה מהשרת'); }
+    let json;
+    try { json = JSON.parse(text); }
+    catch(e) { throw new Error('תגובה לא תקינה מהשרת — ייתכן שצריך לפרוס גרסה חדשה ב-Apps Script'); }
+    if (json && json.ok === false) throw new Error(json.error || 'שגיאה בשרת');
+    return json;
   } catch(e) {
     clearTimeout(timeout);
-    if (e.name === 'AbortError') throw new Error('הבקשה לקחה יותר מדי זמן — נסי שוב');
+    if (e.name === 'AbortError') throw new Error('הבקשה לקחה יותר מדי זמן');
     throw e;
   }
 }
 
+// Retries once — Apps Script commonly fails the first call after idling.
+async function withRetry(fn) {
+  try { return await fn(); }
+  catch(e) { await new Promise(r => setTimeout(r, 1200)); return await fn(); }
+}
+
 async function readSheet(sheetName) {
-  try {
-    const data = await asRequest({ action: 'read', sheet: sheetName });
-    return data.data || [];
-  } catch(e) { return []; }
+  const data = await withRetry(() => asGet({ action: 'read', sheet: sheetName }));
+  return (data && data.data) || [];
 }
 
 async function writeSheet(sheetName, rows) {
-  // Safe write: clear and rewrite in single operation via Apps Script
-  await asRequest({ action: 'write', sheet: sheetName, rows: JSON.stringify(rows) });
+  if (!dataLoaded) throw new Error('הנתונים לא נטענו במלואם — השמירה בוטלה כדי לא למחוק מידע');
+  if (!rows || !rows.length) throw new Error('אין שורות לכתיבה — השמירה בוטלה');
+  await withRetry(() => asPost({ action: 'write', sheet: sheetName, rows }));
 }
 
 async function appendToSheet(sheetName, row) {
-  await asRequest({ action: 'append', sheet: sheetName, row: JSON.stringify(row) });
+  await withRetry(() => asPost({ action: 'append', sheet: sheetName, row }));
 }
 
 // ══════════════════════════ LOAD ALL
 async function loadAll() {
   setSyncStatus('loading', 'טוען...');
   try {
-    const cr = await readSheet(SHEET_CLIENTS);
-    const lr = await readSheet(SHEET_LOGS);
+    // All four reads must succeed before anything touches state. If any one of
+    // them throws, we bail out with the previous state intact and the write
+    // latch closed.
+    const cr  = await readSheet(SHEET_CLIENTS);
+    const lr  = await readSheet(SHEET_LOGS);
     const ldr = await readSheet(SHEET_LEADS);
-    const br = await readSheet('Bonuses');
+    const br  = await readSheet('Bonuses');
 
     state.clients = cr.filter(r => r[0] && r[0] !== 'id').map(r => ({
-      id: r[0], name: r[1]||'', rate: parseFloat(r[2])||0, type: r[3]||'hourly',
+      id: String(r[0]), name: r[1]||'', rate: parseFloat(r[2])||0, type: r[3]||'hourly',
       fixedAmount: parseFloat(r[4])||0, monthlyHours: parseFloat(r[5])||0, color: '#4f8ef7'
     }));
     state.logs = lr.filter(r => r[0] && r[0] !== 'id').map(r => ({
-      id: r[0], cid: r[1]||'', secs: parseInt(r[2])||0, date: r[3]||'', desc: r[4]||''
+      id: String(r[0]), cid: String(r[1]||''), secs: parseInt(r[2])||0,
+      date: normalizeDate(r[3]), desc: r[4]||''
     }));
     state.leads = ldr.filter(r => r[0] && r[0] !== 'id').map(r => ({
-      id: r[0], name: r[1]||'', status: r[2]||'new', field: r[3]||'', date: r[4]||'', notes: r[5]||''
+      id: String(r[0]), name: r[1]||'', status: r[2]||'new', field: r[3]||'', date: r[4]||'', notes: r[5]||''
     }));
     state.bonuses = br.filter(r => r[0] && r[0] !== 'id').map(r => ({
-      id: r[0], cid: r[1]||'', month: r[2]||'', amount: parseFloat(r[3])||0, note: r[4]||''
+      id: String(r[0]), cid: String(r[1]||''), month: String(r[2]||''), amount: parseFloat(r[3])||0, note: r[4]||''
     }));
 
+    dataLoaded = true;
     setSyncStatus('ok', 'מסונכרן');
     render();
+    restoreRunningTimer();
   } catch(e) {
-    setSyncStatus('err', 'שגיאה בטעינה: ' + e.message);
+    dataLoaded = false;
+    setSyncStatus('err', 'שגיאה בטעינה — לחצי כאן לניסיון נוסף');
+    const lbl = document.getElementById('sync-label');
+    if (lbl) { lbl.style.cursor = 'pointer'; lbl.onclick = loadAll; }
   }
+}
+
+// Rows in the sheet come in several shapes depending on when they were written:
+// a real Date object, an ISO string, "YYYY-MM-DD HH:MM:SS", or the US-style
+// "6/3/2026, 12:00:00 PM" that an earlier build produced. Parse permissively —
+// a row that fails to parse disappears from every report, so failing here is
+// the same as losing the entry.
+function normalizeDate(v) {
+  if (!v) return '';
+  if (v instanceof Date) return isNaN(v.getTime()) ? '' : v.toISOString();
+  const s = String(v).trim();
+  let d = new Date(s);
+  if (isNaN(d.getTime()) && s.includes(' ') && !s.includes('T')) d = new Date(s.replace(' ', 'T'));
+  return isNaN(d.getTime()) ? '' : d.toISOString();
 }
 
 async function saveClients() {
@@ -491,6 +543,19 @@ function getWeekKey(dt) { const d = new Date(Date.UTC(dt.getFullYear(),dt.getMon
 function weekLabel(dt) { const d = new Date(dt); const day = d.getDay()||7; const mon = new Date(d); mon.setDate(d.getDate()-day+1); const sun = new Date(mon); sun.setDate(mon.getDate()+6); return `${mon.toLocaleDateString('he-IL',{day:'numeric',month:'numeric'})} — ${sun.toLocaleDateString('he-IL',{day:'numeric',month:'numeric'})}`; }
 function uid() { return 'i' + Date.now() + Math.random().toString(36).substr(2,5); }
 
+// "2026-06-01" alone parses as UTC midnight, which is 03:00 in Israel — that
+// silently dropped anything logged in the small hours of the first day.
+function rangeStart(v) { return new Date(v + 'T00:00:00'); }
+function rangeEnd(v)   { return new Date(v + 'T23:59:59'); }
+
+// Client names and work descriptions go through innerHTML, so anything with
+// < > & or a quote in it would break the markup (or the onclick attribute).
+function esc(v) {
+  return String(v == null ? '' : v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 function render() { renderClients(); renderClientList(); renderLeads(); renderBonusList(); populateBonusClientSelect(); populateInternalClientSelect(); populateClientSelect(); initDates(); }
 
 // ══════════════════════════ TRACKER
@@ -509,7 +574,7 @@ function renderClients() {
         <div>
           <div class="client-name">
             <span style="width:10px;height:10px;border-radius:50%;background:${c.color};display:inline-block;"></span>
-            ${c.name}
+            ${esc(c.name)}
             ${running ? '<span class="badge badge-run">פועל</span>' : ''}
             <span class="badge ${c.type==='fixed'?'badge-f':'badge-h'}">${c.type==='fixed'?'קבוע':'שעות'}</span>
           </div>
@@ -531,13 +596,40 @@ function renderClients() {
   }).join('');
 }
 
+const RUNNING_KEY = 'haop_running_timer';
+
 function startTimer(cid) {
   Object.keys(timers).forEach(id => { if (timers[id] && timers[id].running) stopTimer(id); });
   if (!timers[cid]) timers[cid] = { elapsed: 0, running: false };
   timers[cid].running = true; timers[cid].startTs = Date.now(); timers[cid].baseElapsed = timers[cid].elapsed;
+  try { localStorage.setItem(RUNNING_KEY, JSON.stringify({ cid, startTs: timers[cid].startTs, baseElapsed: timers[cid].baseElapsed })); } catch(e) {}
   intervals[cid] = setInterval(() => { const el = document.getElementById('disp-'+cid); if (el) { timers[cid].elapsed = timers[cid].baseElapsed + Math.floor((Date.now()-timers[cid].startTs)/1000); el.textContent = fmt(timers[cid].elapsed); } }, 1000);
   renderClients();
 }
+
+// A running timer survives a reload, a backgrounded tab, or a browser crash:
+// elapsed time is derived from the saved start timestamp, not from the interval.
+function restoreRunningTimer() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(RUNNING_KEY) || 'null'); } catch(e) {}
+  if (!saved || !saved.cid) return;
+  if (!state.clients.some(c => c.id === saved.cid)) { try { localStorage.removeItem(RUNNING_KEY); } catch(e) {} return; }
+  if (timers[saved.cid] && timers[saved.cid].running) return;
+  timers[saved.cid] = {
+    running: true,
+    startTs: saved.startTs,
+    baseElapsed: saved.baseElapsed || 0,
+    elapsed: (saved.baseElapsed || 0) + Math.floor((Date.now() - saved.startTs) / 1000)
+  };
+  clearInterval(intervals[saved.cid]);
+  intervals[saved.cid] = setInterval(() => {
+    const el = document.getElementById('disp-'+saved.cid);
+    timers[saved.cid].elapsed = timers[saved.cid].baseElapsed + Math.floor((Date.now()-timers[saved.cid].startTs)/1000);
+    if (el) el.textContent = fmt(timers[saved.cid].elapsed);
+  }, 1000);
+  renderClients();
+}
+
 let pendingStopLog = null;
 
 async function stopTimer(cid) {
@@ -545,20 +637,29 @@ async function stopTimer(cid) {
   clearInterval(intervals[cid]);
   timers[cid].elapsed = timers[cid].baseElapsed + Math.floor((Date.now()-timers[cid].startTs)/1000);
   timers[cid].running = false;
-  if (timers[cid].elapsed > 5) {
-    const log = { id: uid(), cid, secs: timers[cid].elapsed, date: nowIsrael(), desc: '' };
-    state.logs.push(log);
+  try { localStorage.removeItem(RUNNING_KEY); } catch(e) {}
+  const elapsed = timers[cid].elapsed;
+  timers[cid].elapsed = 0;
+  renderClients();
+  if (elapsed > 5) {
+    const log = { id: uid(), cid, secs: elapsed, date: nowIsrael(), desc: '' };
     setSyncStatus('loading', 'שומר...');
-    try { await appendLog(log); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה בשמירה'); }
-    // open desc modal
-    pendingStopLog = log;
-    const c = state.clients.find(x => x.id === cid);
-    document.getElementById('stop-modal-title').textContent = (c ? c.name : '') + ' — על מה עבדת?';
-    document.getElementById('stop-desc').value = '';
-    document.getElementById('stop-modal').classList.add('open');
-    setTimeout(() => document.getElementById('stop-desc').focus(), 100);
+    try {
+      await appendLog(log);
+      state.logs.push(log);
+      setSyncStatus('ok', 'מסונכרן');
+      renderClients();
+      pendingStopLog = log;
+      const c = state.clients.find(x => x.id === cid);
+      document.getElementById('stop-modal-title').textContent = (c ? c.name : '') + ' — על מה עבדת?';
+      document.getElementById('stop-desc').value = '';
+      document.getElementById('stop-modal').classList.add('open');
+      setTimeout(() => document.getElementById('stop-desc').focus(), 100);
+    } catch(e) {
+      setSyncStatus('err', 'השמירה נכשלה');
+      alert('לא הצלחתי לשמור ' + secsToHrsLabel(elapsed) + ' לגיליון.\n\nהזמן לא אבד — רשמי אותו ידנית או נסי שוב:\n' + e.message);
+    }
   }
-  timers[cid].elapsed = 0; renderClients();
 }
 
 async function saveStopDesc() {
@@ -632,15 +733,16 @@ function nowIsrael() {
 }
 
 function dateToIsraelDisplay(dateStr) {
-  if (!dateStr) return '';
+  if (!dateStr) return new Date(NaN);
   const dt = new Date(dateStr);
-  const israelStr = dt.toLocaleString('sv-SE', {timeZone:'Asia/Jerusalem'});
-  return new Date(israelStr);
+  if (isNaN(dt.getTime())) return new Date(NaN);
+  return new Date(dt.toLocaleString('sv-SE', {timeZone:'Asia/Jerusalem'}));
 }
 
 function fmtDate(dateStr) {
   if (!dateStr) return '—';
   const dt = dateToIsraelDisplay(dateStr);
+  if (isNaN(dt.getTime())) return '—';
   const d = String(dt.getDate()).padStart(2,'0');
   const m = String(dt.getMonth()+1).padStart(2,'0');
   const y = dt.getFullYear();
@@ -708,11 +810,22 @@ async function saveManual() {
   const m = parseInt(document.getElementById('m-mins').value)||0;
   const secs = h*3600 + m*60; if (!secs) return;
   const dateVal = document.getElementById('m-date').value;
-  const log = { id: uid(), cid: c.id, secs, date: dateVal ? new Date(dateVal+'T12:00:00').toLocaleString('en-US', {timeZone:'Asia/Jerusalem'}) : nowIsrael(), desc: document.getElementById('m-desc').value||'ידני' };
-  state.logs.push(log);
+  const log = {
+    id: uid(), cid: c.id, secs,
+    date: dateVal ? new Date(dateVal + 'T12:00:00').toISOString() : nowIsrael(),
+    desc: document.getElementById('m-desc').value || 'ידני'
+  };
   setSyncStatus('loading', 'שומר...');
-  try { await appendLog(log); setSyncStatus('ok', 'מסונכרן'); } catch(e) { setSyncStatus('err', 'שגיאה'); }
-  closeModal(); renderClients();
+  try {
+    await appendLog(log);
+    state.logs.push(log);
+    setSyncStatus('ok', 'מסונכרן');
+    closeModal();
+    renderClients();
+  } catch(e) {
+    setSyncStatus('err', 'שגיאה בשמירה');
+    alert('השמירה נכשלה, הרישום לא נוסף:\n' + e.message);
+  }
 }
 
 // ══════════════════════════ REPORTS
@@ -726,25 +839,28 @@ function initDates() {
 function buildAllData() {
   const fromVal = document.getElementById('ra-from').value, toVal = document.getElementById('ra-to').value;
   if (!fromVal||!toVal) return null;
-  const from = new Date(fromVal), to = new Date(toVal); to.setHours(23,59,59);
+  const from = rangeStart(fromVal), to = rangeEnd(toVal);
   const rangeLogs = state.logs.filter(l => inRange(l.date, from, to));
   const months = [...new Set(rangeLogs.map(l => monthKey(l.date)))].sort();
-  const buildMonth = mLogs => {
+  // mKey is the "YYYY-MM" this block covers, so a bonus is matched to its own
+  // month rather than to whether any hours happened to be logged that month.
+  const buildMonth = (mLogs, mKey) => {
     let totalNet = 0;
     const rows = state.clients.map(c => {
       const secs = mLogs.filter(l => l.cid === c.id).reduce((a,l) => a+l.secs, 0);
       const hrs = secs/3600;
       const baseEarn = c.type==='fixed' ? c.fixedAmount : Math.round(hrs*c.rate);
-      // add bonuses for this period
-      const bonusEarn = (state.bonuses||[]).filter(b => b.cid===c.id && mLogs.some(l=>monthKey(l.date)===b.month||fromVal.substring(0,7)===b.month)).reduce((a,b)=>a+b.amount,0);
+      const bonusEarn = (state.bonuses||[])
+        .filter(b => b.cid === c.id && (mKey ? b.month === mKey : b.month >= fromVal.substring(0,7) && b.month <= toVal.substring(0,7)))
+        .reduce((a,b) => a + b.amount, 0);
       const earn = baseEarn + bonusEarn;
       totalNet += earn;
       return { name:c.name, type:c.type, monthlyHours:c.monthlyHours, fixedAmount:c.fixedAmount, rate:c.rate, hrs, earn, baseEarn, bonusEarn, secs };
-    }).filter(r => r.secs > 0 || r.type === 'fixed');
+    }).filter(r => r.secs > 0 || r.type === 'fixed' || r.bonusEarn > 0);
     return { rows, totalNet };
   };
-  if (!months.length) { const {rows,totalNet} = buildMonth(rangeLogs); return {single:true,label:`${fromVal} — ${toVal}`,rows,totalNet,fromVal,toVal}; }
-  const mData = months.map(mk => ({key:mk,label:monthLabel(mk),...buildMonth(rangeLogs.filter(l=>monthKey(l.date)===mk))}));
+  if (!months.length) { const {rows,totalNet} = buildMonth(rangeLogs, null); return {single:true,label:`${fmtDate(from)} — ${fmtDate(to)}`,rows,totalNet,fromVal,toVal}; }
+  const mData = months.map(mk => ({key:mk,label:monthLabel(mk),...buildMonth(rangeLogs.filter(l=>monthKey(l.date)===mk), mk)}));
   return { single: months.length===1, months: mData, grandNet: mData.reduce((a,m)=>a+m.totalNet,0), fromVal, toVal };
 }
 
@@ -753,7 +869,7 @@ function buildClientData() {
   const fromVal = document.getElementById('rc-from').value, toVal = document.getElementById('rc-to').value;
   if (!cid||!fromVal||!toVal) return null;
   const c = state.clients.find(x => x.id === cid); if (!c) return null;
-  const from = new Date(fromVal), to = new Date(toVal); to.setHours(23,59,59);
+  const from = rangeStart(fromVal), to = rangeEnd(toVal);
   const rangeLogs = state.logs.filter(l => l.cid === cid && inRange(l.date, from, to));
   const byDay = {};
   rangeLogs.forEach(l => { const day = new Date(l.date).toISOString().split('T')[0]; if (!byDay[day]) byDay[day]={secs:0,descs:[]}; byDay[day].secs+=l.secs; if (l.desc&&l.desc!=='שעון עצר') byDay[day].descs.push(l.desc); });
@@ -770,7 +886,7 @@ function renderReportAll() {
     const vat = Math.round(totalNet*VAT);
     let h = `<div style="font-size:15px;font-weight:600;margin:16px 0 8px;color:var(--accent);">${label}</div>`;
     h += `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>לקוח</th><th>סוג</th><th>שעות מוסכמות</th><th>סכום קבוע</th><th>שעות בפועל</th><th>סכום לתשלום</th></tr></thead><tbody>`;
-    rows.forEach(r => { h += `<tr><td>${r.name}</td><td><span class="badge ${r.type==='fixed'?'badge-f':'badge-h'}">${r.type==='fixed'?'קבוע':'שעות'}</span></td><td>${r.monthlyHours||'—'}</td><td>${r.type==='fixed'?'₪'+r.fixedAmount.toLocaleString():'—'}</td><td>${r.hrs.toFixed(2)}h</td><td><strong>₪${r.earn.toLocaleString()}</strong>${r.bonusEarn>0?`<div style="font-size:11px;color:var(--accent2);">כולל תוספת ₪${r.bonusEarn.toLocaleString()}</div>`:''}</td></tr>`; });
+    rows.forEach(r => { h += `<tr><td>${esc(r.name)}</td><td><span class="badge ${r.type==='fixed'?'badge-f':'badge-h'}">${r.type==='fixed'?'קבוע':'שעות'}</span></td><td>${r.monthlyHours||'—'}</td><td>${r.type==='fixed'?'₪'+r.fixedAmount.toLocaleString():'—'}</td><td>${r.hrs.toFixed(2)}h</td><td><strong>₪${r.earn.toLocaleString()}</strong>${r.bonusEarn>0?`<div style="font-size:11px;color:var(--accent2);">כולל תוספת ₪${r.bonusEarn.toLocaleString()}</div>`:''}</td></tr>`; });
     h += `<tr class="total-row"><td colspan="4">סה"כ</td><td></td><td>ללא מע"מ: ₪${totalNet.toLocaleString()} | מע"מ: ₪${vat.toLocaleString()} | כולל מע"מ: ₪${(totalNet+vat).toLocaleString()}</td></tr></tbody></table></div>`;
     return h;
   };
@@ -784,7 +900,7 @@ function renderReportClient() {
   const d = buildClientData(); if (!d) return;
   const { c, groups, totalHrs, earn, fromVal, toVal } = d;
   const earnVat = Math.round(earn*VAT);
-  let html = `<div style="font-size:15px;font-weight:600;margin-bottom:12px;">${c.name} — ${fromVal} עד ${toVal}</div>`;
+  let html = `<div style="font-size:15px;font-weight:600;margin-bottom:12px;">${esc(c.name)} — ${fmtDate(rangeStart(fromVal))} עד ${fmtDate(rangeStart(toVal))}</div>`;
   if (!groups.length) { html += '<div style="color:var(--text2);font-size:13px;">אין נתונים לתקופה זו</div>'; document.getElementById('rc-content').innerHTML = html; return; }
   groups.forEach(grp => {
     const grpSecs = Object.values(grp.days).reduce((a,dd)=>a+dd.secs,0);
@@ -795,7 +911,7 @@ function renderReportClient() {
       // collect log ids for this day for editing (use first log of day)
       const dayLogs = state.logs.filter(l => l.cid === d.c.id && new Date(l.date).toISOString().split('T')[0] === day);
       const editBtns = dayLogs.map(l => `<button class="btn" onclick="openEditLog('${l.id}')" style="font-size:11px;padding:3px 8px;">✏</button>`).join('');
-      html+=`<tr><td>${fmtDate(day)} ${dt.toLocaleDateString('he-IL',{weekday:'short'})}</td><td><strong>${secsToHrsLabel(data.secs)}</strong></td><td style="color:var(--text2);">${data.descs.length?data.descs.join(', '):'—'}</td><td style="white-space:nowrap;">${editBtns}</td></tr>`;
+      html+=`<tr><td>${fmtDate(day)} ${dt.toLocaleDateString('he-IL',{weekday:'short'})}</td><td><strong>${secsToHrsLabel(data.secs)}</strong></td><td style="color:var(--text2);">${data.descs.length?esc(data.descs.join(', ')):'—'}</td><td style="white-space:nowrap;">${editBtns}</td></tr>`;
     });
     html += `<tr class="total-row"><td>סה"כ</td><td>${secsToHrsLabel(grpSecs)}</td><td></td></tr></tbody></table></div>`;
   });
@@ -812,7 +928,7 @@ function renderReportClient() {
 
 function populateClientSelect() {
   const sel = document.getElementById('rc-client'); const cur = sel.value;
-  sel.innerHTML = state.clients.map(c => `<option value="${c.id}"${c.id===cur?' selected':''}>${c.name}</option>`).join('');
+  sel.innerHTML = state.clients.map(c => `<option value="${esc(c.id)}"${c.id===cur?' selected':''}>${esc(c.name)}</option>`).join('');
 }
 
 // ══════════════════════════ PRINT
@@ -873,12 +989,12 @@ function renderClientList() {
   el.innerHTML=state.clients.map((c,i)=>`
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-        <div style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:${c.color};display:inline-block;"></span><span style="font-weight:600;">${c.name}</span><span class="badge ${c.type==='fixed'?'badge-f':'badge-h'}">${c.type==='fixed'?'קבוע':'שעות'}</span></div>
+        <div style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:${c.color};display:inline-block;"></span><span style="font-weight:600;">${esc(c.name)}</span><span class="badge ${c.type==='fixed'?'badge-f':'badge-h'}">${c.type==='fixed'?'קבוע':'שעות'}</span></div>
         <div style="display:flex;gap:6px;"><button class="btn" onclick="toggleEdit(${i})" style="font-size:12px;">✏ ערוך</button><button class="btn btn-danger" onclick="deleteClient(${i})" style="font-size:12px;">🗑</button></div>
       </div>
       <div style="font-size:12px;color:var(--text2);">₪${c.rate}/h${c.type==='fixed'?' | ₪'+c.fixedAmount.toLocaleString()+' קבוע':''}${c.monthlyHours?' | '+c.monthlyHours+'h מוסכם':''}</div>
       <div class="edit-panel" id="edit-${i}">
-        <div class="grid-2"><div class="form-group"><label>שם</label><input id="en-${i}" type="text" value="${c.name}"></div><div class="form-group"><label>סוג חיוב</label><select id="et-${i}" onchange="toggleEditFields(${i})"><option value="hourly"${c.type==='hourly'?' selected':''}>לפי שעות</option><option value="fixed"${c.type==='fixed'?' selected':''}>סכום קבוע</option></select></div></div>
+        <div class="grid-2"><div class="form-group"><label>שם</label><input id="en-${i}" type="text" value="${esc(c.name)}"></div><div class="form-group"><label>סוג חיוב</label><select id="et-${i}" onchange="toggleEditFields(${i})"><option value="hourly"${c.type==='hourly'?' selected':''}>לפי שעות</option><option value="fixed"${c.type==='fixed'?' selected':''}>סכום קבוע</option></select></div></div>
         <div class="grid-2"><div class="form-group"><label>תעריף לשעה (₪)</label><input id="er-${i}" type="number" value="${c.rate}"></div><div class="form-group" id="ef-${i}" style="display:${c.type==='fixed'?'':'none'};"><label>סכום קבוע (₪)</label><input id="efa-${i}" type="number" value="${c.fixedAmount||''}"></div></div>
         <div class="grid-2"><div class="form-group" id="eh-${i}" style="display:${c.type==='fixed'?'':'none'};"><label>שעות מוסכמות</label><input id="em-${i}" type="number" value="${c.monthlyHours||''}"></div></div>
         <button class="btn btn-primary" onclick="saveEdit(${i})">שמור שינויים</button>
@@ -894,9 +1010,9 @@ function renderLeads() {
   if (!state.leads||!state.leads.length){ll.innerHTML='<div style="color:var(--text2);font-size:13px;">אין לידים עדיין</div>';return;}
   ll.innerHTML=state.leads.map((l,i)=>`
     <div class="lead-card">
-      <div class="lead-header"><div class="lead-name">${l.name}</div><div style="display:flex;gap:6px;align-items:center;"><span class="badge badge-${l.status}">${sl[l.status]||l.status}</span><button class="btn btn-danger" onclick="deleteLead(${i})" style="font-size:12px;">🗑</button></div></div>
-      ${l.field?`<div style="font-size:12px;color:var(--text2);">${l.field}${l.date?' · '+fmtDate(l.date):''}</div>`:''}
-      ${l.notes?`<div style="font-size:12px;color:var(--text2);">${l.notes}</div>`:''}
+      <div class="lead-header"><div class="lead-name">${esc(l.name)}</div><div style="display:flex;gap:6px;align-items:center;"><span class="badge badge-${l.status}">${sl[l.status]||l.status}</span><button class="btn btn-danger" onclick="deleteLead(${i})" style="font-size:12px;">🗑</button></div></div>
+      ${l.field?`<div style="font-size:12px;color:var(--text2);">${esc(l.field)}${l.date?' · '+fmtDate(l.date):''}</div>`:''}
+      ${l.notes?`<div style="font-size:12px;color:var(--text2);">${esc(l.notes)}</div>`:''}
     </div>`).join('');
 }
 async function addLead() {
@@ -913,7 +1029,7 @@ function renderReportInternal() {
   const fromVal = document.getElementById('ri-from').value;
   const toVal = document.getElementById('ri-to').value;
   if (!fromVal || !toVal) return;
-  const from = new Date(fromVal), to = new Date(toVal); to.setHours(23,59,59);
+  const from = rangeStart(fromVal), to = rangeEnd(toVal);
   let logs = state.logs.filter(l => inRange(l.date, from, to));
   if (cid) logs = logs.filter(l => l.cid === cid);
   if (!logs.length) { document.getElementById('ri-content').innerHTML = '<div style="color:var(--text2);font-size:13px;">אין נתונים לתקופה זו</div>'; return; }
@@ -952,9 +1068,9 @@ function renderReportInternal() {
       const c = state.clients.find(x => x.id === l.cid);
       const isDup = dupIds.has(l.id);
       html += `<tr style="${isDup?'background:rgba(247,107,79,.1);':''}">
-        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${c ? c.name : '?'}</td>
+        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${c ? esc(c.name) : '?'}</td>
         <td style="white-space:nowrap;${isDup?'color:var(--warn);font-weight:600;':''}">${secsToHrsLabel(l.secs)}${isDup?' ⚠':''}</td>
-        <td style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${l.desc||'—'}</td>
+        <td style="color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${l.desc?esc(l.desc):'—'}</td>
         <td><button class="btn" onclick="openEditLog('${l.id}')" style="font-size:11px;padding:3px 8px;">✏</button></td>
       </tr>`;
     });
@@ -973,7 +1089,7 @@ function renderReportInternal() {
 function populateInternalClientSelect() {
   const sel = document.getElementById('ri-client');
   if (!sel) return;
-  sel.innerHTML = '<option value="">כל הלקוחות</option>' + state.clients.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+  sel.innerHTML = '<option value="">כל הלקוחות</option>' + state.clients.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
 }
 
 // ══════════════════════════ BONUSES
@@ -1011,7 +1127,7 @@ function renderBonusList() {
   el.innerHTML = state.bonuses.map((b, i) => {
     const c = state.clients.find(x => x.id === b.cid);
     return `<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:0.5px solid var(--border);font-size:13px;">
-      <div><strong>${c ? c.name : '?'}</strong> — ${b.month} — <span style="color:var(--accent2);">+₪${b.amount.toLocaleString()}</span>${b.note?' — '+b.note:''}</div>
+      <div><strong>${c ? esc(c.name) : '?'}</strong> — ${esc(b.month)} — <span style="color:var(--accent2);">+₪${b.amount.toLocaleString()}</span>${b.note?' — '+esc(b.note):''}</div>
       <button class="btn btn-danger" onclick="deleteBonus(${i})" style="font-size:12px;">🗑</button>
     </div>`;
   }).join('');
@@ -1019,7 +1135,7 @@ function renderBonusList() {
 
 function populateBonusClientSelect() {
   const sel = document.getElementById('bonus-client'); if (!sel) return;
-  sel.innerHTML = state.clients.filter(c => c.type === 'fixed').map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+  sel.innerHTML = state.clients.filter(c => c.type === 'fixed').map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
 }
 
 // ══════════════════════════ EXCEL IMPORT
@@ -1141,14 +1257,29 @@ function showImportStatus(msg, type) {
 // ══════════════════════════ INIT
 loadAll();
 
-// Prevent full reload when returning to tab — just refresh sync status
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && state.clients.length > 0) {
-    // Already have data — just check sync status quietly
+// Coming back to the tab: if the data never loaded, retry. If it did, refresh
+// quietly in the background so the screen never blanks out — and never claim
+// "synced" without having actually talked to the sheet.
+let lastSyncTs = Date.now();
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible') return;
+  restoreRunningTimer();
+  if (!dataLoaded) { await loadAll(); return; }
+  if (Date.now() - lastSyncTs < 60000) return;
+  try {
+    const lr = await readSheet(SHEET_LOGS);
+    const fresh = lr.filter(r => r[0] && r[0] !== 'id').map(r => ({
+      id: String(r[0]), cid: String(r[1]||''), secs: parseInt(r[2])||0,
+      date: normalizeDate(r[3]), desc: r[4]||''
+    }));
+    state.logs = fresh;
+    lastSyncTs = Date.now();
     setSyncStatus('ok', 'מסונכרן');
-  } else if (document.visibilityState === 'visible') {
-    // No data yet — load
-    loadAll();
+    renderClients();
+  } catch(e) {
+    setSyncStatus('err', 'לא מסונכרן — לחצי לרענון');
+    const lbl = document.getElementById('sync-label');
+    if (lbl) { lbl.style.cursor = 'pointer'; lbl.onclick = loadAll; }
   }
 });
 </script>
