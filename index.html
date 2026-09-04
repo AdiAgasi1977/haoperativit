@@ -364,9 +364,24 @@ async function apiGet(p){return doFetch(APPS_SCRIPT_URL+'?'+new URLSearchParams(
 async function apiPost(payload){
   return doFetch(APPS_SCRIPT_URL,{method:'POST',redirect:'follow',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)});
 }
+// Retry is only safe for operations that produce the same result when repeated.
+// An append is NOT one of them: if the row landed but the reply was lost, a
+// retry adds it a second time. That was the source of the duplicate rows.
 async function retry(fn){
   try{return await fn()}
   catch(e){await new Promise(r=>setTimeout(r,1200));return await fn()}
+}
+
+// Guard against a second click while a write is still in flight.
+let busy=false;
+async function exclusive(label,fn){
+  if(busy){return {skipped:true}}
+  busy=true;
+  document.body.style.cursor='progress';
+  setSync('loading',label);
+  renderClients();
+  try{return await fn()}
+  finally{busy=false;document.body.style.cursor='';renderClients()}
 }
 
 async function readSheet(name){
@@ -378,7 +393,9 @@ async function readSheet(name){
 // overwrite the whole sheet by accident.
 async function apiAppend(sheet,row,header){
   if(!dataLoaded)throw new Error('הנתונים לא נטענו — הפעולה בוטלה');
-  return retry(()=>apiPost({action:'append',sheet,row,header}));
+  // Sent once, never retried. The Apps Script side also refuses an id that
+  // already exists, so even a duplicate request cannot create a second row.
+  return apiPost({action:'append',sheet,row,header});
 }
 async function apiUpdate(sheet,id,row){
   if(!dataLoaded)throw new Error('הנתונים לא נטענו — הפעולה בוטלה');
@@ -534,8 +551,8 @@ function renderClients(){
       </div>
       <div style="display:flex;align-items:center;gap:10px">
         <div class="timer-disp" id="disp-${c.id}">${fmtClock(elapsed)}</div>
-        ${isRun?`<button class="btn btn-stop" onclick="stopTimer()">⏸ עצור</button>`
-                :`<button class="btn btn-start" onclick="startTimer('${esc(c.id)}')" ${run?'disabled style="opacity:.4;cursor:not-allowed"':''}>▶ התחל</button>`}
+        ${isRun?`<button class="btn btn-stop" onclick="stopTimer()" ${busy?'disabled style="opacity:.4;cursor:wait"':''}>${busy?'⏳ שומר...':'⏸ עצור'}</button>`
+                :`<button class="btn btn-start" onclick="startTimer('${esc(c.id)}')" ${(run||busy)?'disabled style="opacity:.4;cursor:not-allowed"':''}>▶ התחל</button>`}
       </div>
     </div>`;
   }).join('');
@@ -553,49 +570,74 @@ function startTicker(){
 }
 
 async function startTimer(cid){
+  if(busy)return;
   if(runningLog()){alert('כבר רץ שעון. עצרי אותו קודם.');return}
   const log={id:uid(),cid:String(cid),client:clientName(cid),start:Date.now(),end:null,secs:0,desc:'',status:'running'};
-  setSync('loading','פותח רישום...');
-  try{
+  const res=await exclusive('פותח רישום...',async()=>{
     await apiAppend(S_LOGS,logToRow(log),LOG_HEADER);
     state.logs.push(log);
-    setSync('ok','מסונכרן');
-    renderClients();
-  }catch(e){
+    return {ok:true};
+  }).catch(e=>({error:e}));
+  if(res&&res.error){
     setSync('err','לא נפתח רישום');
-    alert('לא הצלחתי לפתוח רישום בגיליון, השעון לא הופעל:\n'+e.message);
+    alert('לא הצלחתי לפתוח רישום בגיליון, השעון לא הופעל:\n'+res.error.message);
+  }else if(res&&!res.skipped){
+    setSync('ok','מסונכרן');
   }
+  renderClients();
 }
 
 let pendingStop=null;
 async function stopTimer(){
-  const run=runningLog(); if(!run)return;
+  if(busy)return;
+  // Close every open record, not just the first — an interrupted session can
+  // leave more than one, and stopping only one looks like "the timer won't stop".
+  const open=state.logs.filter(l=>l.status==='running');
+  if(!open.length)return;
   const end=Date.now();
-  const secs=Math.max(0,Math.round((end-run.start)/1000));
-  if(secs<5){
+  const primary=open[0];
+  const secs=Math.max(0,Math.round((end-primary.start)/1000));
+
+  if(secs<5&&open.length===1){
     if(!confirm('פחות מ-5 שניות. למחוק את הרישום?'))return;
-    try{await apiRemove(S_LOGS,run.id);state.logs=state.logs.filter(l=>l.id!==run.id);renderClients();setSync('ok','מסונכרן')}
-    catch(e){setSync('err','שגיאה')}
+    await exclusive('מוחק...',async()=>{
+      await apiRemove(S_LOGS,primary.id);
+      state.logs=state.logs.filter(l=>l.id!==primary.id);
+      setSync('ok','מסונכרן');
+    }).catch(()=>setSync('err','שגיאה'));
+    renderClients();
     return;
   }
-  setSync('loading','סוגר רישום...');
-  const updated=Object.assign({},run,{end:end,secs:secs,status:'done'});
-  try{
-    await apiUpdate(S_LOGS,run.id,logToRow(updated));
-    const i=state.logs.findIndex(l=>l.id===run.id);
-    if(i>=0)state.logs[i]=updated;
-    setSync('ok','מסונכרן');
-    renderClients();
-    pendingStop=updated;
-    document.getElementById('stop-title').textContent=clientName(run.cid)+' — על מה עבדת?';
-    document.getElementById('stop-summary').innerHTML=`<span class="muted">מ-</span><strong>${timeStr(run.start)}</strong> <span class="muted">עד</span> <strong>${timeStr(end)}</strong> <span class="muted">·</span> <strong style="color:var(--accent2)">${hrsLabel(secs)}</strong>`;
-    document.getElementById('stop-desc').value='';
-    document.getElementById('stop-modal').classList.add('open');
-    setTimeout(()=>document.getElementById('stop-desc').focus(),100);
-  }catch(e){
+
+  const res=await exclusive('סוגר רישום...',async()=>{
+    let closed=0;
+    for(const run of open){
+      const s=Math.max(0,Math.round((end-run.start)/1000));
+      const upd=Object.assign({},run,{end:end,secs:s,status:'done'});
+      await apiUpdate(S_LOGS,run.id,logToRow(upd));
+      const i=state.logs.findIndex(l=>l.id===run.id);
+      if(i>=0)state.logs[i]=upd;
+      closed++;
+      if(run.id===primary.id)pendingStop=upd;
+    }
+    return {closed};
+  }).catch(e=>({error:e}));
+
+  renderClients();
+  if(res&&res.error){
     setSync('err','השמירה נכשלה');
-    alert('לא הצלחתי לסגור את הרישום.\n\nהזמן לא אבד — שעת ההתחלה '+timeStr(run.start)+' רשומה בגיליון, ואפשר להשלים את הסיום ידנית.\n\n'+e.message);
+    alert('לא הצלחתי לסגור את הרישום.\n\nהזמן לא אבד — שעת ההתחלה '+timeStr(primary.start)+' רשומה בגיליון, ואפשר להשלים את הסיום ידנית.\n\n'+res.error.message);
+    return;
   }
+  if(!res||res.skipped)return;
+  setSync('ok','מסונכרן');
+  if(res.closed>1)alert('נסגרו '+res.closed+' רישומים פתוחים. כדאי לבדוק אותם בדוח הפנימי.');
+
+  document.getElementById('stop-title').textContent=clientName(primary.cid)+' — על מה עבדת?';
+  document.getElementById('stop-summary').innerHTML=`<span class="muted">מ-</span><strong>${timeStr(primary.start)}</strong> <span class="muted">עד</span> <strong>${timeStr(end)}</strong> <span class="muted">·</span> <strong style="color:var(--accent2)">${hrsLabel(secs)}</strong>`;
+  document.getElementById('stop-desc').value='';
+  document.getElementById('stop-modal').classList.add('open');
+  setTimeout(()=>document.getElementById('stop-desc').focus(),100);
 }
 
 async function saveStopDesc(){
@@ -914,7 +956,7 @@ function renderReportInternal(){
   });
 
   let html='';
-  if(open.length)html+=`<div class="banner banner-warn"><div style="flex:1">יש ${open.length} רישום פתוח שעדיין רץ — הוא לא נכלל בסיכומים עד שייסגר.</div></div>`;
+  if(open.length)html+=`<div class="banner banner-warn"><div style="flex:1">יש ${open.length} רישום פתוח שעדיין רץ — הוא לא נכלל בסיכומים עד שייסגר.</div><button class="btn" onclick="closeOpenRecords()">סגרי רישומים פתוחים</button></div>`;
   if(dup.size)html+=`<div class="banner banner-err"><div style="flex:1">⚠ ${dup.size} רישומים חשודים ככפילות — מסומנים באדום. פתחי אותם ובדקי.</div></div>`;
 
   const byDay={};
@@ -942,6 +984,30 @@ function renderReportInternal(){
   <span class="muted">סה"כ שעות: <strong style="color:var(--text)">${hrsNum(tot).toFixed(2)}</strong></span>
   ${dup.size?`<span class="neg">חשודים ככפילות: <strong>${dup.size}</strong></span>`:'<span class="pos">✓ לא נמצאו כפילויות</span>'}</div></div>`;
   box.innerHTML=html;
+}
+
+// Cleans up records left in "running" state — deletes the ones that never
+// really started, closes the rest at the current time so they can be edited.
+async function closeOpenRecords(){
+  const open=state.logs.filter(l=>l.status==='running');
+  if(!open.length)return;
+  if(!confirm(`נמצאו ${open.length} רישומים פתוחים.\n\nרישום שנפתח לפני פחות מדקה יימחק, השאר ייסגרו בשעה הנוכחית ותוכלי לתקן להם את שעת הסיום.\n\nלהמשיך?`))return;
+  const now=Date.now();
+  await exclusive('מסדר רישומים...',async()=>{
+    for(const l of open){
+      if(now-l.start<60000){
+        await apiRemove(S_LOGS,l.id);
+        state.logs=state.logs.filter(x=>x.id!==l.id);
+      }else{
+        const upd=Object.assign({},l,{end:now,secs:Math.round((now-l.start)/1000),status:'done'});
+        await apiUpdate(S_LOGS,l.id,logToRow(upd));
+        const i=state.logs.findIndex(x=>x.id===l.id);
+        if(i>=0)state.logs[i]=upd;
+      }
+    }
+    setSync('ok','מסונכרן');
+  }).catch(e=>{setSync('err','שגיאה');alert('לא הושלם:\n'+e.message)});
+  renderReportInternal(); renderClients();
 }
 
 /* ─── print ───────────────────────────────────────────────── */
