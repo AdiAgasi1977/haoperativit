@@ -340,10 +340,73 @@ function weekLabel(ms){const mon=new Date(weekKey(ms));const sun=new Date(mon);s
 function clientName(cid){const c=state.clients.find(x=>x.id===cid);return c?c.name:'?'}
 function logSecs(l){return (l.start&&l.end)?Math.max(0,Math.round((l.end-l.start)/1000)):(l.secs||0)}
 
+/* ─── write queue ─────────────────────────────────────────────
+   Every mutation is applied to the screen immediately and pushed onto a
+   queue that drains in the background. Apps Script takes 1–3 seconds per
+   call, so waiting for it on every click is what made the app feel stuck.
+   The queue survives a reload, and every operation in it is safe to repeat:
+   appends are rejected server-side by id, updates and deletes are idempotent.
+──────────────────────────────────────────────────────────────── */
+const QUEUE_KEY='haop_queue_v1';
+const CACHE_KEY='haop_cache_v1';
+let queue=[];
+let draining=false;
+let queueFailed=false;
+
+function loadQueue(){try{queue=JSON.parse(localStorage.getItem(QUEUE_KEY)||'[]')}catch(e){queue=[]}}
+function saveQueue(){try{localStorage.setItem(QUEUE_KEY,JSON.stringify(queue))}catch(e){}}
+
+function enqueue(op){
+  queue.push(op);
+  saveQueue();
+  updateQueueStatus();
+  drain();
+}
+
+function updateQueueStatus(){
+  if(queue.length===0){
+    if(queueFailed){setSync('err','שמירה נכשלה — לחצי לניסיון');return}
+    // Saying "synced" while the last read failed would be a lie — the screen
+    // is showing the local copy, not the sheet.
+    setSync(dataLoaded?'ok':'err',dataLoaded?'מסונכרן':'לא מחובר — לחצי לרענון');
+    return;
+  }
+  setSync('loading','שומר ברקע ('+queue.length+')');
+}
+
+async function drain(){
+  if(draining||!queue.length)return;
+  draining=true;
+  try{
+    while(queue.length){
+      const op=queue[0];
+      try{
+        await apiPost(op.payload);
+        queue.shift();
+        saveQueue();
+        queueFailed=false;
+        updateQueueStatus();
+      }catch(e){
+        op.tries=(op.tries||0)+1;
+        saveQueue();
+        if(op.tries>=3){
+          // Leave it at the head of the queue and stop — nothing is discarded,
+          // and the next successful drain will pick up where this left off.
+          queueFailed=true;
+          setSync('err','שמירה נכשלה ('+queue.length+') — לחצי לניסיון');
+          const lbl=document.getElementById('sync-label');
+          if(lbl){lbl.style.cursor='pointer';lbl.onclick=()=>{queue.forEach(o=>o.tries=0);queueFailed=false;drain()}}
+          break;
+        }
+        await new Promise(r=>setTimeout(r,1500*op.tries));
+      }
+    }
+  }finally{draining=false}
+}
+
+function pendingWrites(){return queue.length}
+
 /* ─── transport ───────────────────────────────────────────── */
-// A plain timeout race rather than AbortController: some sandboxed environments
-// proxy fetch over postMessage, and an AbortSignal cannot be cloned across that
-// bridge. The request is abandoned rather than cancelled, which is fine here.
 function withTimeout(promise,ms,msg){
   let t;
   const timer=new Promise((_,rej)=>{t=setTimeout(()=>rej(new Error(msg)),ms)});
@@ -364,50 +427,59 @@ async function apiGet(p){return doFetch(APPS_SCRIPT_URL+'?'+new URLSearchParams(
 async function apiPost(payload){
   return doFetch(APPS_SCRIPT_URL,{method:'POST',redirect:'follow',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)});
 }
-// Retry is only safe for operations that produce the same result when repeated.
-// An append is NOT one of them: if the row landed but the reply was lost, a
-// retry adds it a second time. That was the source of the duplicate rows.
 async function retry(fn){
   try{return await fn()}
   catch(e){await new Promise(r=>setTimeout(r,1200));return await fn()}
 }
 
-// Guard against a second click while a write is still in flight.
-let busy=false;
-async function exclusive(label,fn){
-  if(busy){return {skipped:true}}
-  busy=true;
-  document.body.style.cursor='progress';
-  setSync('loading',label);
-  renderClients();
-  try{return await fn()}
-  finally{busy=false;document.body.style.cursor='';renderClients()}
+// One request for all four sheets instead of four round trips.
+async function readEverything(){
+  const d=await retry(()=>apiGet({action:'readAll'}));
+  return (d&&d.sheets)||{};
 }
-
 async function readSheet(name){
   const d=await retry(()=>apiGet({action:'read',sheet:name}));
   return (d&&d.data)||[];
 }
-// Every mutation below sends ONE row. Payload size stays constant no matter how
-// many years of history the sheet holds, and there is no code path that can
-// overwrite the whole sheet by accident.
-async function apiAppend(sheet,row,header){
-  if(!dataLoaded)throw new Error('הנתונים לא נטענו — הפעולה בוטלה');
-  // Sent once, never retried. The Apps Script side also refuses an id that
-  // already exists, so even a duplicate request cannot create a second row.
-  return apiPost({action:'append',sheet,row,header});
+
+// These no longer wait for the network — they return as soon as the operation
+// is queued, so the interface responds instantly.
+// Writing a new-layout row into a sheet that still has the old 5-column header
+// would leave that record unreadable on the next load. Edits stay blocked until
+// the structure is upgraded; the timer and reports keep working meanwhile.
+function blockedByLegacy(){
+  if(!legacySchema)return false;
+  alert('הגיליון עדיין במבנה הישן.\n\nכדי לערוך או למחוק רישומים צריך קודם ללחוץ "שדרגי מבנה" בפס הצהוב למעלה.\n\nהשעון והדוחות עובדים כרגיל בינתיים.');
+  return true;
 }
-async function apiUpdate(sheet,id,row){
-  if(!dataLoaded)throw new Error('הנתונים לא נטענו — הפעולה בוטלה');
-  return retry(()=>apiPost({action:'update',sheet,id,row}));
-}
-async function apiRemove(sheet,id){
-  if(!dataLoaded)throw new Error('הנתונים לא נטענו — הפעולה בוטלה');
-  return retry(()=>apiPost({action:'remove',sheet,id}));
-}
+
+function queueAppend(sheet,row,header){enqueue({op:'append',payload:{action:'append',sheet,row,header}})}
+function queueUpdate(sheet,id,row){enqueue({op:'update',payload:{action:'update',sheet,id,row}})}
+function queueRemove(sheet,id){enqueue({op:'remove',payload:{action:'remove',sheet,id}})}
+
+// A whole-sheet rewrite still goes out synchronously and still demands a
+// verified load first — this is the only path that can destroy data.
 async function apiReplaceAll(sheet,rows){
   if(!dataLoaded)throw new Error('הנתונים לא נטענו — הפעולה בוטלה');
   if(!rows||!rows.length)throw new Error('אין שורות לכתיבה — בוטל');
+  return retry(()=>apiPost({action:'write',sheet,rows}));
+}
+
+// Clients, leads and bonuses are stored by rewriting the whole sheet. Working
+// from two computers, the stale copy would erase whatever the other one added.
+// So: re-read the sheet, and refuse the write if it holds ids this copy has
+// never seen. Nothing is overwritten on a mismatch — the user reloads instead.
+async function safeReplaceAll(sheet,rows,knownIds,label){
+  if(!dataLoaded)throw new Error('הנתונים לא נטענו — הפעולה בוטלה');
+  if(!rows||!rows.length)throw new Error('אין שורות לכתיבה — בוטל');
+  let live;
+  try{ live=await readSheet(sheet); }
+  catch(e){ throw new Error('לא הצלחתי לבדוק את הגיליון לפני השמירה: '+e.message) }
+  const known=new Set(knownIds.map(String));
+  const unseen=live.filter(r=>r[0]&&r[0]!=='id').map(r=>String(r[0])).filter(id=>!known.has(id));
+  if(unseen.length){
+    throw new Error(`הגיליון מכיל ${unseen.length} ${label} שנוספו ממחשב אחר ואינם בעותק הזה.\n\nלא שיניתי כלום. רענני את הדף ונסי שוב.`);
+  }
   return retry(()=>apiPost({action:'write',sheet,rows}));
 }
 
@@ -422,32 +494,64 @@ function leadsRows(){return [['id','name','status','field','date','notes'],...st
 function bonusRows(){return [['id','cid','month','amount','note'],...state.bonuses.map(b=>[b.id,b.cid,b.month,b.amount,b.note])]}
 
 /* ─── load ────────────────────────────────────────────────── */
-async function loadAll(){
-  setSync('loading','טוען...');
+// The last known data is mirrored locally, so opening the app shows the real
+// numbers at once instead of a blank screen while Apps Script wakes up. The
+// server copy then overwrites it a second or two later.
+function saveCache(){
+  try{localStorage.setItem(CACHE_KEY,JSON.stringify({t:Date.now(),clients:state.clients,logs:state.logs,leads:state.leads,bonuses:state.bonuses,legacy:legacySchema}))}catch(e){}
+}
+function loadCache(){
   try{
-    const cr=await readSheet(S_CLIENTS);
-    const lr=await readSheet(S_LOGS);
-    const dr=await readSheet(S_LEADS);
-    const br=await readSheet(S_BONUS);
+    const c=JSON.parse(localStorage.getItem(CACHE_KEY)||'null');
+    if(!c||!c.clients)return false;
+    state.clients=c.clients||[];state.logs=c.logs||[];state.leads=c.leads||[];state.bonuses=c.bonuses||[];
+    legacySchema=!!c.legacy;
+    return true;
+  }catch(e){return false}
+}
 
-    state.clients=cr.filter(r=>r[0]&&r[0]!=='id').map(r=>({
-      id:String(r[0]),name:r[1]||'',rate:parseFloat(r[2])||0,type:r[3]||'hourly',
-      fixedAmount:parseFloat(r[4])||0,monthlyHours:parseFloat(r[5])||0
-    }));
+function applySheets(sheets){
+  const cr=sheets[S_CLIENTS]||[], lr=sheets[S_LOGS]||[], dr=sheets[S_LEADS]||[], br=sheets[S_BONUS]||[];
+  state.clients=cr.filter(r=>r[0]&&r[0]!=='id').map(r=>({
+    id:String(r[0]),name:r[1]||'',rate:parseFloat(r[2])||0,type:r[3]||'hourly',
+    fixedAmount:parseFloat(r[4])||0,monthlyHours:parseFloat(r[5])||0
+  }));
+  const header=(lr[0]||[]).map(x=>String(x));
+  legacySchema=header[1]==='cid'||(header.length<8&&header.length>0);
+  state.logs=parseLogs(lr,legacySchema);
+  state.leads=dr.filter(r=>r[0]&&r[0]!=='id').map(r=>({
+    id:String(r[0]),name:r[1]||'',status:r[2]||'new',field:r[3]||'',date:r[4]||'',notes:r[5]||''
+  }));
+  state.bonuses=br.filter(r=>r[0]&&r[0]!=='id').map(r=>({
+    id:String(r[0]),cid:String(r[1]||''),month:String(r[2]||''),amount:parseFloat(r[3])||0,note:r[4]||''
+  }));
+}
 
-    const header=(lr[0]||[]).map(x=>String(x));
-    legacySchema = header[1]==='cid' || (header.length<8 && header.length>0);
-    state.logs=parseLogs(lr,legacySchema);
-
-    state.leads=dr.filter(r=>r[0]&&r[0]!=='id').map(r=>({
-      id:String(r[0]),name:r[1]||'',status:r[2]||'new',field:r[3]||'',date:r[4]||'',notes:r[5]||''
-    }));
-    state.bonuses=br.filter(r=>r[0]&&r[0]!=='id').map(r=>({
-      id:String(r[0]),cid:String(r[1]||''),month:String(r[2]||''),amount:parseFloat(r[3])||0,note:r[4]||''
-    }));
-
+async function loadAll(){
+  // Anything still queued is sent before reading, otherwise the fresh copy
+  // from the sheet would roll back edits that have not been saved yet.
+  if(queue.length){await drain()}
+  if(queue.length){
+    setSync('err','יש שמירות ממתינות — הרענון נדחה');
+    return;
+  }
+  setSync('loading','מרענן...');
+  try{
+    let sheets;
+    try{
+      sheets=await readEverything();
+    }catch(e){
+      // Older deployments of the script do not know readAll yet.
+      sheets={};
+      sheets[S_CLIENTS]=await readSheet(S_CLIENTS);
+      sheets[S_LOGS]=await readSheet(S_LOGS);
+      sheets[S_LEADS]=await readSheet(S_LEADS);
+      sheets[S_BONUS]=await readSheet(S_BONUS);
+    }
+    applySheets(sheets);
     dataLoaded=true;
-    setSync('ok','מסונכרן');
+    saveCache();
+    updateQueueStatus();
     renderBanner();
     render();
     startTicker();
@@ -457,8 +561,19 @@ async function loadAll(){
     setSync('err','שגיאה בטעינה — לחצי לניסיון נוסף');
     const lbl=document.getElementById('sync-label');
     if(lbl){lbl.style.cursor='pointer';lbl.onclick=loadAll}
-    showBanner('err','לא הצלחתי לטעון את הנתונים מהגיליון. '+esc(e.message)+' — <b>שום דבר לא נמחק</b>, והשמירה מושבתת עד שהטעינה תצליח.','נסי שוב','loadAll()');
+    showBanner('err','לא הצלחתי לרענן מהגיליון. '+esc(e.message)+' — <b>שום דבר לא נמחק</b>, ומה שרואים כאן הוא העותק המקומי האחרון.','נסי שוב','loadAll()');
   }
+}
+
+// Paints the screen from the local snapshot, then refreshes from the server.
+function boot(){
+  loadQueue();
+  if(loadCache()){
+    render();
+    startTicker();
+    setSync('loading','מרענן...');
+  }
+  loadAll();
 }
 
 // Reads both the new 10-column layout and the legacy 5-column one, so the app
@@ -551,8 +666,8 @@ function renderClients(){
       </div>
       <div style="display:flex;align-items:center;gap:10px">
         <div class="timer-disp" id="disp-${c.id}">${fmtClock(elapsed)}</div>
-        ${isRun?`<button class="btn btn-stop" onclick="stopTimer()" ${busy?'disabled style="opacity:.4;cursor:wait"':''}>${busy?'⏳ שומר...':'⏸ עצור'}</button>`
-                :`<button class="btn btn-start" onclick="startTimer('${esc(c.id)}')" ${(run||busy)?'disabled style="opacity:.4;cursor:not-allowed"':''}>▶ התחל</button>`}
+        ${isRun?`<button class="btn btn-stop" onclick="stopTimer()">⏸ עצור</button>`
+                :`<button class="btn btn-start" onclick="startTimer('${esc(c.id)}')" ${run?'disabled style="opacity:.4;cursor:not-allowed"':''}>▶ התחל</button>`}
       </div>
     </div>`;
   }).join('');
@@ -569,29 +684,20 @@ function startTicker(){
   },1000);
 }
 
-async function startTimer(cid){
-  if(busy)return;
+function startTimer(cid){
+  if(blockedByLegacy())return;
   if(runningLog()){alert('כבר רץ שעון. עצרי אותו קודם.');return}
   const log={id:uid(),cid:String(cid),client:clientName(cid),start:Date.now(),end:null,secs:0,desc:'',status:'running'};
-  const res=await exclusive('פותח רישום...',async()=>{
-    await apiAppend(S_LOGS,logToRow(log),LOG_HEADER);
-    state.logs.push(log);
-    return {ok:true};
-  }).catch(e=>({error:e}));
-  if(res&&res.error){
-    setSync('err','לא נפתח רישום');
-    alert('לא הצלחתי לפתוח רישום בגיליון, השעון לא הופעל:\n'+res.error.message);
-  }else if(res&&!res.skipped){
-    setSync('ok','מסונכרן');
-  }
+  state.logs.push(log);
+  saveCache();
   renderClients();
+  queueAppend(S_LOGS,logToRow(log),LOG_HEADER);
 }
 
 let pendingStop=null;
-async function stopTimer(){
-  if(busy)return;
-  // Close every open record, not just the first — an interrupted session can
-  // leave more than one, and stopping only one looks like "the timer won't stop".
+function stopTimer(){
+  // Closes every open record, not just the first — an interrupted session can
+  // leave more than one, and stopping only one looks like "it won't stop".
   const open=state.logs.filter(l=>l.status==='running');
   if(!open.length)return;
   const end=Date.now();
@@ -600,38 +706,23 @@ async function stopTimer(){
 
   if(secs<5&&open.length===1){
     if(!confirm('פחות מ-5 שניות. למחוק את הרישום?'))return;
-    await exclusive('מוחק...',async()=>{
-      await apiRemove(S_LOGS,primary.id);
-      state.logs=state.logs.filter(l=>l.id!==primary.id);
-      setSync('ok','מסונכרן');
-    }).catch(()=>setSync('err','שגיאה'));
-    renderClients();
+    state.logs=state.logs.filter(l=>l.id!==primary.id);
+    saveCache(); renderClients();
+    queueRemove(S_LOGS,primary.id);
     return;
   }
 
-  const res=await exclusive('סוגר רישום...',async()=>{
-    let closed=0;
-    for(const run of open){
-      const s=Math.max(0,Math.round((end-run.start)/1000));
-      const upd=Object.assign({},run,{end:end,secs:s,status:'done'});
-      await apiUpdate(S_LOGS,run.id,logToRow(upd));
-      const i=state.logs.findIndex(l=>l.id===run.id);
-      if(i>=0)state.logs[i]=upd;
-      closed++;
-      if(run.id===primary.id)pendingStop=upd;
-    }
-    return {closed};
-  }).catch(e=>({error:e}));
-
+  open.forEach(run=>{
+    const s=Math.max(0,Math.round((end-run.start)/1000));
+    const upd=Object.assign({},run,{end:end,secs:s,status:'done'});
+    const i=state.logs.findIndex(l=>l.id===run.id);
+    if(i>=0)state.logs[i]=upd;
+    if(run.id===primary.id)pendingStop=upd;
+    queueUpdate(S_LOGS,run.id,logToRow(upd));
+  });
+  saveCache();
   renderClients();
-  if(res&&res.error){
-    setSync('err','השמירה נכשלה');
-    alert('לא הצלחתי לסגור את הרישום.\n\nהזמן לא אבד — שעת ההתחלה '+timeStr(primary.start)+' רשומה בגיליון, ואפשר להשלים את הסיום ידנית.\n\n'+res.error.message);
-    return;
-  }
-  if(!res||res.skipped)return;
-  setSync('ok','מסונכרן');
-  if(res.closed>1)alert('נסגרו '+res.closed+' רישומים פתוחים. כדאי לבדוק אותם בדוח הפנימי.');
+  if(open.length>1)alert('נסגרו '+open.length+' רישומים פתוחים. כדאי לבדוק אותם בדוח הפנימי.');
 
   document.getElementById('stop-title').textContent=clientName(primary.cid)+' — על מה עבדת?';
   document.getElementById('stop-summary').innerHTML=`<span class="muted">מ-</span><strong>${timeStr(primary.start)}</strong> <span class="muted">עד</span> <strong>${timeStr(end)}</strong> <span class="muted">·</span> <strong style="color:var(--accent2)">${hrsLabel(secs)}</strong>`;
@@ -640,19 +731,18 @@ async function stopTimer(){
   setTimeout(()=>document.getElementById('stop-desc').focus(),100);
 }
 
-async function saveStopDesc(){
+function saveStopDesc(){
   if(!pendingStop){closeModal('stop-modal');return}
   const d=document.getElementById('stop-desc').value.trim();
-  if(!d){skipStopDesc();return}
-  const upd=Object.assign({},pendingStop,{desc:d});
-  setSync('loading','שומר...');
-  try{
-    await apiUpdate(S_LOGS,upd.id,logToRow(upd));
+  closeModal('stop-modal');
+  if(d){
+    const upd=Object.assign({},pendingStop,{desc:d});
     const i=state.logs.findIndex(l=>l.id===upd.id);
     if(i>=0)state.logs[i]=upd;
-    setSync('ok','מסונכרן');
-  }catch(e){setSync('err','התיאור לא נשמר')}
-  pendingStop=null; closeModal('stop-modal');
+    saveCache();
+    queueUpdate(S_LOGS,upd.id,logToRow(upd));
+  }
+  pendingStop=null;
 }
 function skipStopDesc(){pendingStop=null;closeModal('stop-modal')}
 
@@ -684,21 +774,21 @@ function calcRecover(){
   if(!end){el.textContent='—';return}
   el.textContent=hrsLabel(Math.round((end-orphan.start)/1000));
 }
-async function confirmRecover(){
+function confirmRecover(){
+  if(blockedByLegacy())return;
   const end=recoverEndMs(); if(!end||!orphan)return;
   const upd=Object.assign({},orphan,{end:end,secs:Math.round((end-orphan.start)/1000),status:'done'});
-  setSync('loading','שומר...');
-  try{
-    await apiUpdate(S_LOGS,upd.id,logToRow(upd));
-    const i=state.logs.findIndex(l=>l.id===upd.id); if(i>=0)state.logs[i]=upd;
-    setSync('ok','מסונכרן'); renderClients();
-  }catch(e){setSync('err','שגיאה');alert('לא נשמר: '+e.message);return}
+  const i=state.logs.findIndex(l=>l.id===upd.id); if(i>=0)state.logs[i]=upd;
+  saveCache(); renderClients();
+  queueUpdate(S_LOGS,upd.id,logToRow(upd));
   orphan=null; closeModal('recover-modal');
 }
-async function discardRecover(){
+function discardRecover(){
+  if(blockedByLegacy())return;
   if(!orphan||!confirm('למחוק את הרישום הפתוח?'))return;
-  try{await apiRemove(S_LOGS,orphan.id);state.logs=state.logs.filter(l=>l.id!==orphan.id);renderClients();setSync('ok','מסונכרן')}
-  catch(e){setSync('err','שגיאה')}
+  state.logs=state.logs.filter(l=>l.id!==orphan.id);
+  saveCache(); renderClients();
+  queueRemove(S_LOGS,orphan.id);
   orphan=null; closeModal('recover-modal');
 }
 
@@ -726,23 +816,18 @@ function calcManual(){
   const sp=spanMs(document.getElementById('m-date').value,document.getElementById('m-start').value,document.getElementById('m-end').value);
   document.getElementById('m-dur').textContent=sp?hrsLabel(Math.round((sp.end-sp.start)/1000)):'—';
 }
-async function saveManual(){
+function saveManual(){
+  if(blockedByLegacy())return;
   const c=state.clients[manualIdx];
   const sp=spanMs(document.getElementById('m-date').value,document.getElementById('m-start').value,document.getElementById('m-end').value);
   if(!sp){alert('נא למלא תאריך, שעת התחלה ושעת סיום');return}
   const log={id:uid(),cid:c.id,client:c.name,start:sp.start,end:sp.end,
              secs:Math.round((sp.end-sp.start)/1000),desc:document.getElementById('m-desc').value.trim()||'ידני',status:'done'};
-  setSync('loading','שומר...');
-  try{
-    await apiAppend(S_LOGS,logToRow(log),LOG_HEADER);
-    state.logs.push(log);
-    setSync('ok','מסונכרן');
-    closeModal('manual-modal');
-    renderClients();
-  }catch(e){
-    setSync('err','שגיאה');
-    alert('השמירה נכשלה, הרישום לא נוסף:\n'+e.message);
-  }
+  state.logs.push(log);
+  saveCache();
+  closeModal('manual-modal');
+  renderClients();
+  queueAppend(S_LOGS,logToRow(log),LOG_HEADER);
 }
 
 /* ─── edit / delete a log ─────────────────────────────────── */
@@ -762,30 +847,26 @@ function calcEdit(){
   const sp=spanMs(document.getElementById('el-date').value,document.getElementById('el-start').value,document.getElementById('el-end').value);
   document.getElementById('el-dur').textContent=sp?hrsLabel(Math.round((sp.end-sp.start)/1000)):'—';
 }
-async function saveEditLog(){
+function saveEditLog(){
+  if(blockedByLegacy())return;
   const l=state.logs.find(x=>x.id===editId); if(!l)return;
   const sp=spanMs(document.getElementById('el-date').value,document.getElementById('el-start').value,document.getElementById('el-end').value);
   if(!sp){alert('נא למלא תאריך, שעת התחלה ושעת סיום');return}
   const upd=Object.assign({},l,{start:sp.start,end:sp.end,secs:Math.round((sp.end-sp.start)/1000),
                                 desc:document.getElementById('el-desc').value.trim(),status:'done'});
-  setSync('loading','שומר...');
-  try{
-    await apiUpdate(S_LOGS,upd.id,logToRow(upd));
-    const i=state.logs.findIndex(x=>x.id===upd.id); if(i>=0)state.logs[i]=upd;
-    setSync('ok','מסונכרן');
-    closeModal('editlog-modal'); refreshOpenReport(); renderClients();
-  }catch(e){setSync('err','שגיאה');alert('השמירה נכשלה:\n'+e.message)}
+  const i=state.logs.findIndex(x=>x.id===upd.id); if(i>=0)state.logs[i]=upd;
+  saveCache();
+  closeModal('editlog-modal'); refreshOpenReport(); renderClients();
+  queueUpdate(S_LOGS,upd.id,logToRow(upd));
 }
-async function deleteLog(){
+function deleteLog(){
+  if(blockedByLegacy())return;
   if(!editId||!confirm('למחוק רישום זה לצמיתות?'))return;
   const id=editId;
-  setSync('loading','מוחק...');
-  try{
-    await apiRemove(S_LOGS,id);
-    state.logs=state.logs.filter(l=>l.id!==id);
-    setSync('ok','מסונכרן');
-    closeModal('editlog-modal'); refreshOpenReport(); renderClients();
-  }catch(e){setSync('err','שגיאה');alert('המחיקה נכשלה:\n'+e.message)}
+  state.logs=state.logs.filter(l=>l.id!==id);
+  saveCache();
+  closeModal('editlog-modal'); refreshOpenReport(); renderClients();
+  queueRemove(S_LOGS,id);
 }
 function refreshOpenReport(){
   if(document.getElementById('page-report-internal').classList.contains('active'))renderReportInternal();
@@ -796,14 +877,28 @@ function refreshOpenReport(){
 /* ─── schema migration ────────────────────────────────────── */
 async function migrateSchema(){
   if(!dataLoaded){alert('הנתונים לא נטענו — לא ניתן לשדרג כרגע');return}
+  if(queue.length){alert('יש '+queue.length+' שמירות שעדיין לא הגיעו לגיליון.\n\nהמתיני שהמונה בפינה יגיע ל"מסונכרן" ואז נסי שוב.');return}
   if(!state.logs.length){alert('אין רישומים לשדרוג');return}
-  if(!confirm(`שדרוג מבנה של ${state.logs.length} רישומים.\n\nוודאי שיצרת עותק גיבוי של הגיליון.\n\nלהמשיך?`))return;
+
+  // The rewrite replaces the sheet with what was parsed into memory. Any row
+  // that could not be parsed is not in memory, so it would vanish. Count them
+  // against the sheet first and refuse rather than lose them quietly.
+  let raw;
+  try{ raw=await readSheet(S_LOGS); }
+  catch(e){ alert('לא הצלחתי לקרוא את הגיליון לפני השדרוג:\n'+e.message); return }
+  const dataRows=raw.filter(r=>r[0]&&r[0]!=='id').length;
+  const dropped=dataRows-state.logs.length;
+  if(dropped>0){
+    alert(`בגיליון יש ${dataRows} רישומים אבל רק ${state.logs.length} נקראו בהצלחה.\n\n${dropped} רישומים עם תאריך לא תקין יאבדו בשדרוג, ולכן עצרתי.\n\nחפשי בלשונית Logs שורות עם תאריך ריק או משובש, תקני אותן, ונסי שוב.`);
+    return;
+  }
+  if(!confirm(`שדרוג מבנה של ${state.logs.length} רישומים.\n\nוודאי שיצרת עותק גיבוי של הגיליון (קובץ ← צור עותק).\n\nלהמשיך?`))return;
+
   setSync('loading','משדרג מבנה...');
   try{
     const rows=[LOG_HEADER,...state.logs.map(l=>logToRow(Object.assign({},l,{client:l.client||clientName(l.cid)})))];
     await apiReplaceAll(S_LOGS,rows);
     legacySchema=false;
-    setSync('ok','מסונכרן');
     clearBanner();
     alert('השדרוג הושלם. '+state.logs.length+' רישומים הומרו.');
     await loadAll();
@@ -988,25 +1083,24 @@ function renderReportInternal(){
 
 // Cleans up records left in "running" state — deletes the ones that never
 // really started, closes the rest at the current time so they can be edited.
-async function closeOpenRecords(){
+function closeOpenRecords(){
+  if(blockedByLegacy())return;
   const open=state.logs.filter(l=>l.status==='running');
   if(!open.length)return;
   if(!confirm(`נמצאו ${open.length} רישומים פתוחים.\n\nרישום שנפתח לפני פחות מדקה יימחק, השאר ייסגרו בשעה הנוכחית ותוכלי לתקן להם את שעת הסיום.\n\nלהמשיך?`))return;
   const now=Date.now();
-  await exclusive('מסדר רישומים...',async()=>{
-    for(const l of open){
-      if(now-l.start<60000){
-        await apiRemove(S_LOGS,l.id);
-        state.logs=state.logs.filter(x=>x.id!==l.id);
-      }else{
-        const upd=Object.assign({},l,{end:now,secs:Math.round((now-l.start)/1000),status:'done'});
-        await apiUpdate(S_LOGS,l.id,logToRow(upd));
-        const i=state.logs.findIndex(x=>x.id===l.id);
-        if(i>=0)state.logs[i]=upd;
-      }
+  open.forEach(l=>{
+    if(now-l.start<60000){
+      state.logs=state.logs.filter(x=>x.id!==l.id);
+      queueRemove(S_LOGS,l.id);
+    }else{
+      const upd=Object.assign({},l,{end:now,secs:Math.round((now-l.start)/1000),status:'done'});
+      const i=state.logs.findIndex(x=>x.id===l.id);
+      if(i>=0)state.logs[i]=upd;
+      queueUpdate(S_LOGS,l.id,logToRow(upd));
     }
-    setSync('ok','מסונכרן');
-  }).catch(e=>{setSync('err','שגיאה');alert('לא הושלם:\n'+e.message)});
+  });
+  saveCache();
   renderReportInternal(); renderClients();
 }
 
@@ -1107,8 +1201,8 @@ async function addClient(){
     monthlyHours:type==='fixed'?(parseFloat(document.getElementById('c-hours').value)||0):0};
   state.clients.push(c);
   setSync('loading','שומר...');
-  try{await apiReplaceAll(S_CLIENTS,clientsRows());setSync('ok','מסונכרן');render()}
-  catch(e){state.clients.pop();setSync('err','שגיאה');alert('לא נשמר:\n'+e.message);return}
+  try{await safeReplaceAll(S_CLIENTS,clientsRows(),state.clients.map(x=>x.id),'לקוחות');setSync('ok','מסונכרן');saveCache();render()}
+  catch(e){state.clients.pop();setSync('err','שגיאה');alert('לא נשמר:\n'+e.message);render();return}
   ['c-name','c-rate','c-fixed','c-hours'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});
 }
 function toggleEdit(i){document.getElementById('edit-'+i).classList.toggle('open')}
@@ -1125,8 +1219,8 @@ async function saveClient(i){
   c.fixedAmount=c.type==='fixed'?(parseFloat(document.getElementById('efa-'+i).value)||0):0;
   c.monthlyHours=c.type==='fixed'?(parseFloat(document.getElementById('em-'+i).value)||0):0;
   setSync('loading','שומר...');
-  try{await apiReplaceAll(S_CLIENTS,clientsRows());setSync('ok','מסונכרן');render()}
-  catch(e){state.clients[i]=prev;setSync('err','שגיאה');alert('לא נשמר:\n'+e.message)}
+  try{await safeReplaceAll(S_CLIENTS,clientsRows(),state.clients.map(x=>x.id),'לקוחות');setSync('ok','מסונכרן');saveCache();render()}
+  catch(e){state.clients[i]=prev;setSync('err','שגיאה');alert('לא נשמר:\n'+e.message);render()}
 }
 async function deleteClient(i){
   const c=state.clients[i];
@@ -1134,8 +1228,8 @@ async function deleteClient(i){
   if(!confirm(`למחוק את ${c.name}?`+(n?`\n\nיש ${n} רישומי זמן שמשויכים אליו — הם יישארו בגיליון אבל לא יופיעו בדוחות.`:'')))return;
   const removed=state.clients.splice(i,1)[0];
   setSync('loading','שומר...');
-  try{await apiReplaceAll(S_CLIENTS,clientsRows());setSync('ok','מסונכרן');render()}
-  catch(e){state.clients.splice(i,0,removed);setSync('err','שגיאה');alert('לא נמחק:\n'+e.message)}
+  try{await safeReplaceAll(S_CLIENTS,clientsRows(),state.clients.concat([removed]).map(x=>x.id),'לקוחות');setSync('ok','מסונכרן');saveCache();render()}
+  catch(e){state.clients.splice(i,0,removed);setSync('err','שגיאה');alert('לא נמחק:\n'+e.message);render()}
 }
 function renderClientList(){
   const el=document.getElementById('client-list');
@@ -1192,15 +1286,15 @@ async function addLead(){
     notes:document.getElementById('l-notes').value};
   state.leads.push(lead);
   setSync('loading','שומר...');
-  try{await apiReplaceAll(S_LEADS,leadsRows());setSync('ok','מסונכרן');renderLeads()}
-  catch(e){state.leads.pop();setSync('err','שגיאה');alert('לא נשמר:\n'+e.message);return}
+  try{await safeReplaceAll(S_LEADS,leadsRows(),state.leads.map(x=>x.id),'לידים');setSync('ok','מסונכרן');saveCache();renderLeads()}
+  catch(e){state.leads.pop();setSync('err','שגיאה');alert('לא נשמר:\n'+e.message);renderLeads();return}
   ['l-name','l-field','l-date','l-notes'].forEach(id=>document.getElementById(id).value='');
 }
 async function deleteLead(i){
   const removed=state.leads.splice(i,1)[0];
   setSync('loading','שומר...');
-  try{await apiReplaceAll(S_LEADS,leadsRows());setSync('ok','מסונכרן');renderLeads()}
-  catch(e){state.leads.splice(i,0,removed);setSync('err','שגיאה');renderLeads()}
+  try{await safeReplaceAll(S_LEADS,leadsRows(),state.leads.concat([removed]).map(x=>x.id),'לידים');setSync('ok','מסונכרן');saveCache();renderLeads()}
+  catch(e){state.leads.splice(i,0,removed);setSync('err','שגיאה');alert('לא נמחק:\n'+e.message);renderLeads()}
 }
 
 /* ─── bonuses ─────────────────────────────────────────────── */
@@ -1222,15 +1316,15 @@ async function addBonus(){
   if(!cid||!month||!amount){alert('נא למלא לקוח, חודש וסכום');return}
   state.bonuses.push({id:uid(),cid,month,amount,note:document.getElementById('bonus-note').value||''});
   setSync('loading','שומר...');
-  try{await apiReplaceAll(S_BONUS,bonusRows());setSync('ok','מסונכרן');renderBonusList()}
-  catch(e){state.bonuses.pop();setSync('err','שגיאה');alert('לא נשמר:\n'+e.message);return}
+  try{await safeReplaceAll(S_BONUS,bonusRows(),state.bonuses.map(x=>x.id),'תוספות');setSync('ok','מסונכרן');saveCache();renderBonusList()}
+  catch(e){state.bonuses.pop();setSync('err','שגיאה');alert('לא נשמר:\n'+e.message);renderBonusList();return}
   document.getElementById('bonus-amount').value='';document.getElementById('bonus-note').value='';
 }
 async function deleteBonus(i){
   const removed=state.bonuses.splice(i,1)[0];
   setSync('loading','שומר...');
-  try{await apiReplaceAll(S_BONUS,bonusRows());setSync('ok','מסונכרן');renderBonusList()}
-  catch(e){state.bonuses.splice(i,0,removed);setSync('err','שגיאה');renderBonusList()}
+  try{await safeReplaceAll(S_BONUS,bonusRows(),state.bonuses.concat([removed]).map(x=>x.id),'תוספות');setSync('ok','מסונכרן');saveCache();renderBonusList()}
+  catch(e){state.bonuses.splice(i,0,removed);setSync('err','שגיאה');alert('לא נמחק:\n'+e.message);renderBonusList()}
 }
 
 /* ─── excel import ────────────────────────────────────────── */
@@ -1294,6 +1388,7 @@ function previewImport(){
 }
 async function confirmImport(){
   if(!importData)return;
+  if(blockedByLegacy())return;
   importStatus('מייבא...','loading');
   document.getElementById('import-preview').style.display='none';
   let newClients=0,newLogs=0;
@@ -1302,16 +1397,17 @@ async function confirmImport(){
       let c=state.clients.find(x=>x.name===cn);
       if(!c){c={id:uid(),name:cn,rate:0,type:'hourly',fixedAmount:0,monthlyHours:0};state.clients.push(c);newClients++}
     }
-    if(newClients)await apiReplaceAll(S_CLIENTS,clientsRows());
+    if(newClients)await safeReplaceAll(S_CLIENTS,clientsRows(),state.clients.map(x=>x.id),'לקוחות');
     for(const {clientName:cn,logs} of importData){
       const c=state.clients.find(x=>x.name===cn);
       for(const l of logs){
         const log={id:uid(),cid:c.id,client:c.name,start:l.start,end:l.end,secs:l.secs,desc:l.desc||'מיובא',status:'done'};
-        await apiAppend(S_LOGS,logToRow(log),LOG_HEADER);
         state.logs.push(log); newLogs++;
+        queueAppend(S_LOGS,logToRow(log),LOG_HEADER);
       }
     }
-    importStatus(`✓ יובאו ${newClients} לקוחות חדשים ו-${newLogs} רישומים`,'ok');
+    saveCache();
+    importStatus(`✓ ${newClients} לקוחות חדשים ו-${newLogs} רישומים נוספו — נשמרים לגיליון ברקע`,'ok');
     render();
   }catch(e){
     importStatus('הייבוא נעצר באמצע: '+e.message+` (נוספו ${newLogs} רישומים)`,'err');
@@ -1331,8 +1427,9 @@ function cancelImport(){
 let lastSync=Date.now();
 document.addEventListener('visibilitychange',async()=>{
   if(document.visibilityState!=='visible')return;
-  if(!dataLoaded){await loadAll();return}
   renderClients();
+  if(queue.length){drain();return}
+  if(!dataLoaded){await loadAll();return}
   if(Date.now()-lastSync<45000)return;
   try{
     const lr=await readSheet(S_LOGS);
@@ -1348,7 +1445,7 @@ document.addEventListener('visibilitychange',async()=>{
   }
 });
 
-loadAll();
+boot();
 </script>
 </body>
 </html>
