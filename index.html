@@ -365,6 +365,7 @@ function enqueue(op){
 
 function updateQueueStatus(){
   if(queue.length===0){
+    if(parked.length){setSync('err',parked.length+' שמירות תקועות — ראי למעלה');return}
     if(queueFailed){setSync('err','שמירה נכשלה — לחצי לניסיון');return}
     // Saying "synced" while the last read failed would be a lie — the screen
     // is showing the local copy, not the sheet.
@@ -372,6 +373,19 @@ function updateQueueStatus(){
     return;
   }
   setSync('loading','שומר ברקע ('+queue.length+')');
+}
+
+// Writes that can never succeed are moved aside instead of sitting at the head
+// of the queue forever. A stuck item used to block every refresh, which left a
+// machine showing stale data with no way out.
+const PARKED_KEY='haop_parked_v1';
+let parked=[];
+function loadParked(){try{parked=JSON.parse(localStorage.getItem(PARKED_KEY)||'[]')}catch(e){parked=[]}}
+function saveParked(){try{localStorage.setItem(PARKED_KEY,JSON.stringify(parked))}catch(e){}}
+
+function isPermanent(msg){
+  const m=String(msg||'');
+  return m.includes('row not found')||m.includes('sheet not found')||m.includes('unknown action')||m.includes('missing action')||m.includes('no rows');
 }
 
 async function drain(){
@@ -387,21 +401,60 @@ async function drain(){
         queueFailed=false;
         updateQueueStatus();
       }catch(e){
-        op.tries=(op.tries||0)+1;
-        saveQueue();
-        if(op.tries>=3){
-          // Leave it at the head of the queue and stop — nothing is discarded,
-          // and the next successful drain will pick up where this left off.
-          queueFailed=true;
-          setSync('err','שמירה נכשלה ('+queue.length+') — לחצי לניסיון');
-          const lbl=document.getElementById('sync-label');
-          if(lbl){lbl.style.cursor='pointer';lbl.onclick=()=>{queue.forEach(o=>o.tries=0);queueFailed=false;drain()}}
-          break;
+        const msg=e&&e.message||'';
+        // An update whose row is gone still carries the whole row, so it can be
+        // re-created rather than lost. This is how a record survives the sheet
+        // being rewritten underneath it.
+        if(msg.includes('row not found')&&op.payload.action==='update'&&op.payload.row){
+          op.payload={action:'append',sheet:op.payload.sheet,row:op.payload.row,header:LOG_HEADER};
+          op.tries=0; op.recovered=true;
+          saveQueue();
+          continue;
         }
+        op.tries=(op.tries||0)+1;
+        if(isPermanent(msg)||op.tries>=4){
+          op.error=msg;
+          parked.push(queue.shift());
+          saveQueue(); saveParked();
+          renderParked();
+          continue;   // keep going — one bad item must not hold up the rest
+        }
+        saveQueue();
         await new Promise(r=>setTimeout(r,1500*op.tries));
       }
     }
+    queueFailed=parked.length>0;
+    updateQueueStatus();
   }finally{draining=false}
+}
+
+function renderParked(){
+  if(!parked.length)return;
+  const el=document.getElementById('global-banner'); if(!el)return;
+  el.innerHTML=`<div class="banner banner-err"><div style="flex:1">
+    <b>${parked.length} שמירות לא עברו לגיליון.</b> הן שמורות כאן ולא אבדו.<br>
+    <span style="font-size:12px;opacity:.85">${esc(parked[0].error||'')}</span></div>
+    <button class="btn" onclick="retryParked()">נסי שוב</button>
+    <button class="btn" onclick="showParked()">מה תקוע?</button></div>`;
+}
+function retryParked(){
+  if(!parked.length)return;
+  parked.forEach(o=>{o.tries=0;delete o.error;queue.push(o)});
+  parked=[]; saveParked(); saveQueue();
+  clearBanner(); updateQueueStatus(); drain();
+}
+function showParked(){
+  if(!parked.length){alert('אין שמירות תקועות');return}
+  const lines=parked.slice(0,10).map(o=>{
+    const r=o.payload.row||[];
+    return `• ${o.payload.action} · ${o.payload.sheet} · ${r[1]||r[0]||''} ${r[8]?'· '+r[8]:''}`;
+  });
+  alert('שמירות תקועות:\n\n'+lines.join('\n')+(parked.length>10?`\n\n...ועוד ${parked.length-10}`:'')+'\n\nסיבה: '+(parked[0].error||'לא ידוע'));
+}
+function discardParked(){
+  if(!parked.length)return;
+  if(!confirm(`למחוק ${parked.length} שמירות תקועות לצמיתות?\n\nהן לא יגיעו לגיליון.`))return;
+  parked=[]; saveParked(); clearBanner(); updateQueueStatus();
 }
 
 function pendingWrites(){return queue.length}
@@ -528,12 +581,15 @@ function applySheets(sheets){
 }
 
 async function loadAll(){
-  // Anything still queued is sent before reading, otherwise the fresh copy
-  // from the sheet would roll back edits that have not been saved yet.
+  // Pending writes go out before reading, otherwise the fresh copy from the
+  // sheet would roll back edits that have not been saved yet. But a write that
+  // keeps failing gets parked rather than blocking the read indefinitely —
+  // being unable to see the data was worse than the risk it guarded against.
   if(queue.length){await drain()}
   if(queue.length){
-    setSync('err','יש שמירות ממתינות — הרענון נדחה');
-    return;
+    setSync('err','שמירות ממתינות — מנסה שוב');
+    queue.forEach(o=>{o.error='לא נשלח בזמן';parked.push(o)});
+    queue=[]; saveQueue(); saveParked(); renderParked();
   }
   setSync('loading','מרענן...');
   try{
@@ -555,6 +611,7 @@ async function loadAll(){
     renderBanner();
     render();
     startTicker();
+    startAutoRefresh();
     checkOrphanTimer();
   }catch(e){
     dataLoaded=false;
@@ -568,6 +625,8 @@ async function loadAll(){
 // Paints the screen from the local snapshot, then refreshes from the server.
 function boot(){
   loadQueue();
+  loadParked();
+  if(parked.length)renderParked();
   if(loadCache()){
     render();
     startTicker();
@@ -605,6 +664,7 @@ function showBanner(kind,html,btnText,btnAction){
 }
 function clearBanner(){document.getElementById('global-banner').innerHTML=''}
 function renderBanner(){
+  if(parked.length){renderParked();return}
   if(legacySchema&&state.logs.length){
     showBanner('warn','<b>מבנה הנתונים הישן זוהה.</b> הרישומים הקיימים נשמרו לפי משך בלבד, בלי שעת סיום. שדרוג המבנה יוסיף עמודות שם לקוח, שעת התחלה ושעת סיום — ויאפשר תיעוד מדויק מכאן והלאה.<br><span class="muted">גבי את הגיליון לפני השדרוג (קובץ ← צור עותק).</span>','שדרגי מבנה','migrateSchema()');
   } else clearBanner();
@@ -666,8 +726,8 @@ function renderClients(){
       </div>
       <div style="display:flex;align-items:center;gap:10px">
         <div class="timer-disp" id="disp-${c.id}">${fmtClock(elapsed)}</div>
-        ${isRun?`<button class="btn btn-stop" onclick="stopTimer()">⏸ עצור</button>`
-                :`<button class="btn btn-start" onclick="startTimer('${esc(c.id)}')" ${run?'disabled style="opacity:.4;cursor:not-allowed"':''}>▶ התחל</button>`}
+        ${isRun?`<button class="btn btn-stop" onclick="stopTimer()" ${stopping?'disabled style="opacity:.5;cursor:wait"':''}>${stopping?'⏳ בודק...':'⏸ עצור'}</button>`
+                :`<button class="btn btn-start" onclick="startTimer('${esc(c.id)}')" ${(run||starting||stopping)?'disabled style="opacity:.4;cursor:not-allowed"':''}>${starting?'⏳ בודק...':'▶ התחל'}</button>`}
       </div>
     </div>`;
   }).join('');
@@ -684,22 +744,59 @@ function startTicker(){
   },1000);
 }
 
-function startTimer(cid){
+async function startTimer(cid){
   if(blockedByLegacy())return;
   if(runningLog()){alert('כבר רץ שעון. עצרי אותו קודם.');return}
-  const log={id:uid(),cid:String(cid),client:clientName(cid),start:Date.now(),end:null,secs:0,desc:'',status:'running'};
-  state.logs.push(log);
-  saveCache();
+  if(starting)return;
+  starting=true;
   renderClients();
-  queueAppend(S_LOGS,logToRow(log),LOG_HEADER);
+  try{
+    // Ask the sheet, not this copy. The other computer may have opened a timer
+    // that this one has not heard about yet, and starting a second one is what
+    // produced duplicate open records.
+    if(queue.length===0&&dataLoaded){
+      try{
+        await refreshLogs(true);
+        const other=runningLog();
+        if(other){
+          alert('כבר רץ שעון על '+clientName(other.cid)+' (התחיל ב-'+timeStr(other.start)+'), כנראה ממחשב אחר.\n\nעצרי אותו קודם.');
+          return;
+        }
+      }catch(e){ /* offline — fall through and trust the local copy */ }
+    }
+    const log={id:uid(),cid:String(cid),client:clientName(cid),start:Date.now(),end:null,secs:0,desc:'',status:'running'};
+    state.logs.push(log);
+    saveCache();
+    queueAppend(S_LOGS,logToRow(log),LOG_HEADER);
+  }finally{
+    starting=false;
+    renderClients();
+  }
 }
+let starting=false;
 
 let pendingStop=null;
-function stopTimer(){
-  // Closes every open record, not just the first — an interrupted session can
-  // leave more than one, and stopping only one looks like "it won't stop".
+async function stopTimer(){
+  if(stopping)return;
+  stopping=true;
+  renderClients();
+  try{
+    // Refresh first: a record opened on the other machine is not in this copy,
+    // and closing only what is here is why the timer seemed not to stop.
+    if(queue.length===0&&dataLoaded){
+      try{await refreshLogs(true)}catch(e){}
+    }
+    doStop();
+  }finally{
+    stopping=false;
+    renderClients();
+  }
+}
+let stopping=false;
+
+function doStop(){
   const open=state.logs.filter(l=>l.status==='running');
-  if(!open.length)return;
+  if(!open.length){alert('אין שעון פעיל. ייתכן שהוא נסגר ממחשב אחר.');return}
   const end=Date.now();
   const primary=open[0];
   const secs=Math.max(0,Math.round((end-primary.start)/1000));
@@ -1425,20 +1522,53 @@ function cancelImport(){
 
 /* ─── tab return ──────────────────────────────────────────── */
 let lastSync=Date.now();
+// Pulls the log sheet and reconciles it against what this computer believes.
+// Without this, a copy left open on the other machine keeps its own idea of
+// which timer is running — which is how a second open record gets created and
+// why stopping here would not stop the one started there.
+async function refreshLogs(quiet){
+  if(queue.length)return false;
+  const before=(state.logs.find(l=>l.status==='running')||{}).id||null;
+  const lr=await readSheet(S_LOGS);
+  const hdr=(lr[0]||[]).map(x=>String(x));
+  state.logs=parseLogs(lr,hdr[1]==='cid'||(hdr.length<8&&hdr.length>0));
+  lastSync=Date.now();
+  saveCache();
+  const after=(state.logs.find(l=>l.status==='running')||{}).id||null;
+  renderClients(); refreshOpenReport();
+  if(!quiet)setSync('ok','מסונכרן');
+  else updateQueueStatus();
+  // Tell the user when the other machine changed what is running here.
+  if(before&&!after)notifyRemote('שעון שהיה פתוח כאן נסגר ממחשב אחר.');
+  else if(!before&&after)notifyRemote('יש שעון שרץ ממחשב אחר — '+clientName(state.logs.find(l=>l.status==='running').cid)+'.');
+  return true;
+}
+function notifyRemote(msg){
+  const el=document.getElementById('global-banner');
+  if(!el||legacySchema||parked.length)return;
+  el.innerHTML=`<div class="banner banner-warn"><div style="flex:1">${esc(msg)}</div><button class="btn" onclick="clearBanner()">הבנתי</button></div>`;
+}
+
+// While the tab is open, check the sheet every minute so this copy never drifts
+// far enough from the other machine to make a wrong decision.
+let autoTimer=null;
+function startAutoRefresh(){
+  if(autoTimer)clearInterval(autoTimer);
+  autoTimer=setInterval(()=>{
+    if(document.visibilityState!=='visible')return;
+    if(queue.length||!dataLoaded)return;
+    refreshLogs(true).catch(()=>{});
+  },60000);
+}
+
 document.addEventListener('visibilitychange',async()=>{
   if(document.visibilityState!=='visible')return;
   renderClients();
   if(queue.length){drain();return}
   if(!dataLoaded){await loadAll();return}
-  if(Date.now()-lastSync<45000)return;
-  try{
-    const lr=await readSheet(S_LOGS);
-    const hdr=(lr[0]||[]).map(x=>String(x));
-    state.logs=parseLogs(lr,hdr[1]==='cid'||(hdr.length<8&&hdr.length>0));
-    lastSync=Date.now();
-    setSync('ok','מסונכרן');
-    renderClients(); refreshOpenReport();
-  }catch(e){
+  if(Date.now()-lastSync<20000)return;
+  try{ await refreshLogs(false) }
+  catch(e){
     setSync('err','לא מסונכרן — לחצי לרענון');
     const lbl=document.getElementById('sync-label');
     if(lbl){lbl.style.cursor='pointer';lbl.onclick=loadAll}
